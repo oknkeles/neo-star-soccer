@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+/* Design tokens — use these via Tailwind classes: bg-bg, bg-panel, text-accent, border-line, font-display … */
+@theme {
+  --color-bg: #060d09;
+  --color-bg-2: #0b1711;
+  --color-panel: #101c16;
+  --color-panel-2: #16261e;
+  --color-line: #20352a;
+  --color-ink: #e9f5ee;
+  --color-ink-dim: #9db5a7;
+  --color-ink-mute: #5f7a6b;
+  --color-accent: #b8ff3c;
+  --color-accent-2: #3cffb0;
+  --color-gold: #ffcb47;
+  --color-danger: #ff4f64;
+  --color-info: #49c6ff;
+  --color-violet: #a98bff;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bebas Neue", "Inter", ui-sans-serif, sans-serif;
+  --radius-card: 18px;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 700px at 80% -10%, #12301f 0%, transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, #0e2a2a 0%, transparent 55%), var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+* { scrollbar-width: thin; scrollbar-color: #2a4436 transparent; }
+
+.font-display { letter-spacing: 0.02em; }
+
+/* Glass card used by the kit */
+.glass {
+  background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015));
+  border: 1px solid rgba(184,255,60,0.08);
+  box-shadow: 0 10px 30px -12px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04);
+  backdrop-filter: blur(10px);
+}
+
+.neon-text { text-shadow: 0 0 18px rgba(184,255,60,0.45); }
+
+@keyframes nss-pulse { 0%,100% { opacity: 1 } 50% { opacity: .55 } }
+.animate-nss-pulse { animation: nss-pulse 1.6s ease-in-out infinite; }
+
+@keyframes nss-shine { from { background-position: -200% 0 } to { background-position: 200% 0 } }
+.shine {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  background-size: 200% 100%;
+  animation: nss-shine 2.4s linear infinite;
+}
