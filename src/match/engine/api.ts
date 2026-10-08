@@ -82,3 +82,10 @@ export function botStep(engine: MomentEngine, rng: Rng): void {
 export function autoResolve(setup: MomentSetup, rng: Rng): MomentResult {
   return resolveStatistically(setup, rng);
 }
+
+/**
+ * Casual-play control assists (used by the 2D view): automatic aim for shots, best team-mate
+ * selection for passes / through balls, and a cheap info snapshot for the aim UI.
+ */
+export { assistShot, assistPass, pickPass, assistInfo } from './assist';
+export type { ShotIntent, PassIntent, PassPick, AssistInfo } from './assist';

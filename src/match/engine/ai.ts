@@ -245,14 +245,14 @@ function defendOffBall(e: Engine, a: Agent, pressers: Agent[] | null, marks: Map
     const close = pressers[0] === a ? 0.9 : 3.5;
     const target = { x: c.st.pos.x + (gx / gl) * close, y: c.st.pos.y + (gy / gl) * close };
     const diff = clamp(e.setup.difficulty, 0, 1);
-    let urg = a.side === 'them' ? 0.8 + 0.2 * diff : 0.9;
-    if (d > 8) urg = 1;
+    let urg = a.side === 'them' ? (0.8 + 0.2 * diff) * (1 - 0.16 * e.ease) : 0.9;
+    if (d > 8) urg = a.side === 'them' ? 1 - 0.12 * e.ease : 1;
     goTo(a, target, urg, 'press');
     // tackle attempts
     const bd = hyp(s.ball.pos.x - a.st.pos.x, s.ball.pos.y - a.st.pos.y);
     if (pressers[0] === a && bd < 1.3 && a.cool <= 0 && a.stun <= 0 && e.state.phase !== 'outcome') {
       let rate = 0.12 + 0.18 * (a.a.tackling / 99);
-      if (a.side === 'them') rate *= 0.75 + 0.6 * diff;
+      if (a.side === 'them') rate *= (0.75 + 0.6 * diff) * (1 - 0.5 * e.ease);
       if (a.side === 'us' && e.attackSide === 'them') rate *= 0.45;
       if (c.isGK) rate = 0;
       if (e.rng.chance(rate)) e.tryTackle(a, e.rng.chance(0.12));

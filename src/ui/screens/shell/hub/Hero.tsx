@@ -1,39 +1,21 @@
-/** Hub hero: next match (crests, competition, role, forecast) + the primary CTA. */
-import { useMemo } from 'react';
+/** Hub hero: the next match (crests, competition, role) and the one big primary action. */
 import { motion } from 'framer-motion';
-import { CalendarClock, Cloud, CloudFog, CloudRain, FastForward, MapPin, Snowflake, Sun, Swords } from 'lucide-react';
-import type { Fixture, GameState, Kit, Weather } from '../../../../core/types';
-import { Rng } from '../../../../core/rng';
+import { CalendarClock, FastForward, Swords } from 'lucide-react';
+import type { GameState, Kit } from '../../../../core/types';
 import { getLang, t } from '../../../../core/i18n';
-import { randomWeather } from '../../../../competition/api';
 import type { Agenda } from '../../../../game/api';
 import { Badge, Button, Crest, Icon, clsx } from '../../../components/kit';
-import { attempt, formatDate, openEvent, teamView } from '../helpers';
+import { formatDate, openEvent, teamView } from '../helpers';
+import { AiChip } from './FeedPanels';
 
-const WEATHER_ICON = { clear: Sun, cloudy: Cloud, rain: CloudRain, snow: Snowflake, fog: CloudFog } as const;
-
-function hash(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
-
-/** Deterministic "forecast" for a fixture (the real conditions are rolled when the match starts). */
-function forecast(state: GameState, f: Fixture, country?: string): Weather | null {
-  return attempt(() => randomWeather(new Rng(hash(f.id)), f.season, f.week, country), null);
-}
-
-export default function Hero({ state, agenda, advancing, onAdvance, onPlay, onPress }: {
-  state: GameState; agenda: Agenda; advancing: boolean; onAdvance: () => void; onPlay: (fixtureId: string) => void; onPress: () => void;
+export default function Hero({ state, agenda, advancing, onAdvance, onPlay }: {
+  state: GameState; agenda: Agenda; advancing: boolean; onAdvance: () => void; onPlay: (fixtureId: string) => void;
 }) {
   const lang = getLang();
   const entry = agenda.fixtures.find((x) => !x.fixture.played) ?? agenda.fixtures[0] ?? null;
   const fx = entry?.fixture ?? null;
   const home = fx ? teamView(state, fx.homeId) : null;
   const away = fx ? teamView(state, fx.awayId) : null;
-  const weather = useMemo(() => (fx ? forecast(state, fx, state.world.clubs[fx.homeId]?.country) : null), [state, fx]);
-  const WIcon = weather ? WEATHER_ICON[weather.kind] : Sun;
-  const stadium = fx ? state.world.clubs[fx.homeId]?.stadium.name : undefined;
   const pending = agenda.pendingMatches.length > 0;
   const week = agenda.week;
   const weekLabel = week.label[lang] ?? week.label.en;
@@ -51,21 +33,22 @@ export default function Hero({ state, agenda, advancing, onAdvance, onPlay, onPr
   return (
     <motion.div
       initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
-      className="relative overflow-hidden rounded-3xl border border-line p-4 sm:p-6"
-      style={{ background: `radial-gradient(110% 90% at 0% 0%, ${hc}44, transparent 58%), radial-gradient(110% 90% at 100% 0%, ${ac}44, transparent 58%), linear-gradient(180deg, #10241a, #08110c)` }}
+      className="relative overflow-hidden rounded-3xl border border-line p-5 sm:p-7"
+      style={{ background: `radial-gradient(110% 90% at 0% 0%, ${hc}33, transparent 58%), radial-gradient(110% 90% at 100% 0%, ${ac}33, transparent 58%), linear-gradient(180deg, #10241a, #08110c)` }}
     >
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 opacity-30" style={{ background: 'repeating-linear-gradient(90deg, rgba(184,255,60,0.12) 0 30px, rgba(184,255,60,0.04) 30px 60px)', maskImage: 'linear-gradient(0deg, #000, transparent)' }} />
-
-      <div className="relative flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-ink-dim">
-          <CalendarClock size={14} className="text-accent" />{t('shell.hub.next')}
-          <span className="text-ink-mute">· {weekLabel}{week.date ? ` · ${formatDate(week.date)}` : ''}</span>
+      <div className="relative flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0 text-[11px] font-bold uppercase tracking-[0.14em] text-ink-dim whitespace-nowrap">
+          <CalendarClock size={14} className="text-accent shrink-0" />{t('shell.hub.next')}
+          <span className="text-ink-mute truncate normal-case tracking-normal font-semibold">· {weekLabel}{week.date ? ` · ${formatDate(week.date)}` : ''}</span>
         </div>
-        <div className="flex items-center gap-1.5">
+        <AiChip />
+      </div>
+      {(week.transferWindow || week.internationalBreak) && (
+        <div className="relative mt-3 flex flex-wrap items-center gap-1.5">
           {week.transferWindow && <Badge tone="gold"><Icon name="handshake" size={11} />{t('shell.hub.window')}</Badge>}
           {week.internationalBreak && <Badge tone="info"><Icon name="flag" size={11} />{t('shell.hub.intl')}</Badge>}
         </div>
-      </div>
+      )}
 
       {fx && home && away && entry ? (
         <>
@@ -92,16 +75,10 @@ export default function Hero({ state, agenda, advancing, onAdvance, onPlay, onPr
             <TeamSide name={away.name} kit={away.kit} short={away.shortName} mine={!entry.home} />
           </div>
 
-          <div className="relative mt-5 flex flex-wrap items-center justify-center gap-2">
+          <div className="relative mt-4 flex flex-wrap items-center justify-center gap-2">
             <Badge tone={entry.home ? 'accent' : 'info'}>{entry.home ? t('common.home') : t('common.away')}</Badge>
             {fx.neutral && <Badge>{t('shell.hub.neutral')}</Badge>}
             {roleBadge}
-            {stadium && <span className="flex items-center gap-1 text-xs text-ink-dim"><MapPin size={12} />{stadium}</span>}
-            {weather && !fx.played && (
-              <span className="flex items-center gap-1.5 text-xs text-ink-dim rounded-full bg-white/6 px-2.5 py-1" title={t('shell.hub.forecast')}>
-                <WIcon size={14} className="text-gold" />{t(`shell.weather.${weather.kind}`)} · {Math.round(weather.temperature)}°
-              </span>
-            )}
           </div>
         </>
       ) : (
@@ -112,11 +89,10 @@ export default function Hero({ state, agenda, advancing, onAdvance, onPlay, onPr
         </div>
       )}
 
-      <div className="relative mt-6">
+      <div className="relative mt-6 sm:mt-7">
         {pending ? (
           <div className="flex flex-col sm:flex-row gap-2.5">
             <Button variant="primary" size="lg" block className="sm:flex-1 !h-14 text-lg" icon="play" onClick={() => onPlay(agenda.pendingMatches[0])}>{t('shell.hub.play')}</Button>
-            {agenda.pressAvailable && <Button variant="secondary" size="lg" icon="mic" onClick={onPress}>{t('shell.hub.pressShort')}</Button>}
           </div>
         ) : (
           <div className="flex flex-col gap-3">
@@ -124,7 +100,6 @@ export default function Hero({ state, agenda, advancing, onAdvance, onPlay, onPr
               <Button variant="primary" size="lg" block className="sm:flex-1 !h-14 text-lg" loading={advancing} disabled={!agenda.canAdvance} onClick={onAdvance}>
                 <FastForward size={20} />{advancing ? t('shell.hub.advancing') : t('shell.hub.advance')}
               </Button>
-              {agenda.pressAvailable && <Button variant="secondary" size="lg" icon="mic" onClick={onPress}>{t('shell.hub.pressShort')}</Button>}
             </div>
             {!agenda.canAdvance && agenda.blockers.length > 0 && (
               <div className="rounded-2xl border border-gold/30 bg-gold/8 px-4 py-3">

@@ -451,6 +451,7 @@ export function doActivity(state: GameState, rng: Rng, id: string): { ok: boolea
       break;
     }
     case 'romance_meet': {
+      if (c.partnerId) { text = t('career.act.hasPartner'); break; } // never more than one partner
       const chance = clamp(0.32 + c.fame / 250 + (p.morale - 50) / 300 + (hasTrait(p, 'showman') ? 0.08 : 0), 0.15, 0.75);
       if (rng.chance(chance)) {
         const partner = createPartner(state, rng);

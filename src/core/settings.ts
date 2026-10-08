@@ -28,9 +28,10 @@ export function defaultSettings(): Settings {
     graphics: { quality: 'high', shadows: true },
     audio: { master: 0.8, sfx: 0.9, crowd: 0.7, muted: false },
     camera: 'behind',
-    difficulty: 'normal',
-    slowmoAim: true,
+    difficulty: 'easy',
+    slowmoAim: false,
     matchSpeed: 1,
+    matchView: '2d',
   };
 }
 
@@ -43,6 +44,11 @@ function load(): Settings {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(KEY) : null;
     if (!raw) return base;
     const parsed = JSON.parse(raw) as Partial<Settings>;
+    if (parsed.matchView === undefined) {
+      // settings saved before the 2D view: move the old defaults to the new, easier ones once
+      if (parsed.difficulty === 'normal') parsed.difficulty = 'easy';
+      parsed.slowmoAim = false;
+    }
     return {
       ...base,
       ...parsed,

@@ -57,10 +57,10 @@ export function pickSpice(list: readonly string[], key: string, salt: number): s
 
 const GENESIS_SPICES = [
   'an unlikely first coach', 'a family business the player was supposed to take over', 'a promise made to someone who is gone',
-  'a neighbourhood pitch with a famous crooked crossbar', 'a scout who almost missed the trial', 'a sibling who was the more talented one',
+  'a neighbourhood pitch with a famous crooked crossbar', 'a scout who almost missed the trial', 'a grandfather who taught him first touches',
   'a late growth spurt', 'a rejection letter kept in a drawer', 'a childhood spent moving between cities', 'a local legend who refused to sign',
   'an obsession with free kicks against a garage door', 'a grandmother who never missed a youth match', 'a fisherman father who hates football',
-  'a cup final watched through a café window', 'a pair of boots shared between two brothers',
+  'a cup final watched through a café window', 'a pair of boots bought with a whole month of savings',
 ];
 
 const EVENT_SPICES = [
@@ -129,7 +129,7 @@ FIELDS
 - destinyHint: one cryptic, poetic line (max 120 chars) hinting at hidden potential; no numbers, no spoilers.
 - rivalBlurb: 1–2 sentences (max 240 chars) on the rivalry with ${input.rivalName} of ${input.rivalClub}, the same age; give it a specific origin story.
 ${mentorLine}
-- family: 2–4 members with roles father, mother or sibling (at most one father and one mother). Names fit the nationality; the family surname is usually "${input.lastName}". personality: 2–4 words. bio: one sentence (max 160 chars) with a specific detail (a job, a quirk, a sacrifice).
+- family: EXACTLY 2 members: one father and one mother (role "father" and role "mother"); no siblings, no other relatives. Names fit the nationality; the family surname is usually "${input.lastName}". personality: 2–4 words. bio: one sentence (max 160 chars) with a specific detail (a job, a quirk, a sacrifice).
 - agent: an invented, memorable football agent with a name fitting the nationality, personality (2–4 words) and a one-sentence bio (max 180 chars). A former player, a chaotic uncle, a slick operator, a quiet genius: surprise us.`,
   };
 }

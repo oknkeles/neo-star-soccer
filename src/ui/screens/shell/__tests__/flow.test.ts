@@ -55,7 +55,10 @@ describe('shell flow on the real game API', () => {
     expect(g0.dream).toBeTruthy();
     expect(g0.destinyHint).toBeTruthy();
     expect(g0.agent.name).toBeTruthy();
-    expect(g0.family.length).toBeGreaterThan(0);
+    // exactly two family members: a mother and a father (no siblings)
+    expect(g0.family.map((f) => f.role).sort()).toEqual(['father', 'mother']);
+    const s0 = need(ctx).state!;
+    expect(s0.career.people.filter((x) => ['father', 'mother', 'sibling', 'friend'].includes(x.role)).map((x) => x.role).sort()).toEqual(['father', 'mother']);
     expect(g0.goals.length).toBe(3);
     const s = need(ctx).state!;
     expect(s.world.players[s.career.rivalId]).toBeDefined();
@@ -65,7 +68,15 @@ describe('shell flow on the real game API', () => {
     const c = need(ctx);
     const s = c.state as GameState;
     const o = openClubOffers(s)[0];
+    const others = s.offers.filter((x) => x.kind === 'trial' && x.id !== o.id);
+    expect(others.length).toBeGreaterThan(0);
+    const invites = (id: string) => c.state!.inbox.filter((m) => m.ref?.type === 'offer' && m.ref.id === id);
     c.respondOffer(o.id, 'accept');
+    // the clubs that lost out are withdrawn and their invitation messages are gone from the inbox
+    for (const x of others) {
+      expect(c.state!.offers.find((q) => q.id === x.id)?.status).toBe('withdrawn');
+      expect(invites(x.id)).toHaveLength(0);
+    }
     const v = userView(c.state);
     expect(v?.club?.id).toBe(o.fromClubId);
     expect(c.agenda().needsClub).toBe(false);

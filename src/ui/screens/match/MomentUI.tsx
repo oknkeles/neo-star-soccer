@@ -4,6 +4,8 @@ import { Camera, ChevronRight, FastForward, Play, RotateCcw } from 'lucide-react
 import type { CameraMode, MomentResult, MomentType } from '../../../core/types';
 import type { MomentKind } from '../../../match/flow/api';
 import { t } from '../../../core/i18n';
+import { getSettings } from '../../../core/settings';
+import '../../../match/view2d/strings';
 import { Button, clsx } from '../../components/kit';
 import { resultTone, type ResultTone } from './helpers';
 
@@ -12,8 +14,12 @@ const AUTO_START_MS = 7000;
 export function momentTitle(type: MomentType, kind: MomentKind | null): string {
   return kind === 'shootout' ? t('match.mt.shootout') : t(`match.mt.${type}`);
 }
+/** The 2D view (default) has its own, simpler controls. */
+export const is2D = (): boolean => getSettings().matchView !== '3d';
+
 export function momentTip(type: MomentType, kind: MomentKind | null): string {
-  return kind === 'shootout' ? t('match.tip.shootout') : t(`match.tip.${type}`);
+  const ns = is2D() ? 'v2d' : 'match';
+  return kind === 'shootout' ? t(`${ns}.tip.shootout`) : t(`${ns}.tip.${type}`);
 }
 
 /** Dramatic intro card before a moment: minute, title, one-line tip; play or simulate. */
@@ -98,9 +104,9 @@ export function MomentHud({ left, label, camera, onCamera, onSkip, skipLabel, ex
           <div className="hidden sm:block truncate rounded-full bg-black/50 backdrop-blur px-3 py-1 font-display text-lg tracking-wider text-accent">{label}</div>
         </div>
         {extra}
-        <button onClick={onCamera} title={t(`match.cam.${camera}`)}
+        <button onClick={onCamera} title={is2D() ? t(`v2d.zoom.${camera}`) : t(`match.cam.${camera}`)}
           className="pointer-events-auto h-10 px-3 rounded-xl bg-black/55 backdrop-blur border border-white/10 text-ink flex items-center gap-1.5 text-xs font-semibold cursor-pointer hover:bg-black/70">
-          <Camera size={16} /><span className="hidden sm:inline">{t(`match.cam.${camera}`)}</span>
+          <Camera size={16} /><span className="hidden sm:inline">{is2D() ? t(`v2d.zoom.${camera}`) : t(`match.cam.${camera}`)}</span>
         </button>
         {onSkip && (
           <button onClick={onSkip}

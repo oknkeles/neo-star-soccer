@@ -224,7 +224,7 @@ export function weeklyRecovery(state: GameState, rng: Rng): string[] {
     if (c.relationships.partner < 8) {
       const partner = c.people.find((x) => x.id === c.partnerId);
       notes.push(t('career.rec.breakup', { name: partner?.name ?? '?' }));
-      if (partner) { partner.role = 'friend'; partner.relationship = 10; }
+      if (partner) c.people = c.people.filter((x) => x.id !== partner.id); // the ex simply leaves the circle (no 'friend' leftovers)
       c.partnerId = null;
       c.relationships.partner = 0;
       delete state.flags['career.married'];

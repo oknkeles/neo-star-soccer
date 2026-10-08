@@ -7,7 +7,7 @@ import type { Lang, TraitId } from '../core/types';
 import type { GenesisInput, Narrator } from '../core/narrative-types';
 import type { Rng } from '../core/rng';
 import { fill, paragraph, rngFrom, say, type Bank, type Slots } from './grammar';
-import { cultureOf, firstName, fullPersonName, lastName, type Culture, type Gender } from './names';
+import { cultureOf, firstName, fullPersonName, lastName, type Culture } from './names';
 
 export const GENESIS_FLAVORS = [
   'prodigy', 'redemption', 'outsider', 'family_legacy', 'late_bloomer',
@@ -288,11 +288,11 @@ const FLAVORS: Record<GenesisFlavor, FlavorText> = {
     origin: {
       tr: [
         'On beş yaşında ağır bir diz sakatlığı geçirdi; doktorlar {first:dat} profesyonel futbolu unutmasını söyledi.',
-        'Bir akademiden "yeterince iyi değil" notuyla gönderildikten sonra {first} bir yıl boyunca topa dokunmadı; onu yeniden sahaya {sibling} sürükledi.',
+        'Bir akademiden "yeterince iyi değil" notuyla gönderildikten sonra {first} bir yıl boyunca topa dokunmadı; onu yeniden sahaya {mother} sürükledi.',
       ],
       en: [
         'At fifteen a serious knee injury had doctors telling {first} to forget about professional football.',
-        'Released by an academy as "not good enough", {first} didn\'t touch a ball for a year — until {sibling} dragged him back onto the pitch.',
+        'Released by an academy as "not good enough", {first} didn\'t touch a ball for a year — until {mother} dragged him back onto the pitch.',
       ],
     },
     turning: {
@@ -512,13 +512,6 @@ const MOTHERS: Role[] = [
   { personality: ['tribünün en yüksek sesi', 'the loudest voice in the stand'], bio: ['Amatör maçlarda hakemlere en çok bağıran oydu. Şimdi stat görevlileri onu adıyla tanıyor.', 'She was the one screaming at referees in the amateur days. Now stadium stewards know her by name.'] },
 ];
 
-const SIBLINGS: (Role & { gender: Gender; elder: boolean })[] = [
-  { gender: 'm', elder: true, personality: ['kendisi de oynamış, gölgede kalan ağabey', 'older brother who played too, now in the shadows'], bio: ['Bir zamanlar ailenin yıldızı oydu. Şimdi kardeşinin en sert eleştirmeni ve en büyük hayranı.', 'He used to be the family\'s star. Now he\'s his little brother\'s harshest critic and biggest fan.'] },
-  { gender: 'f', elder: false, personality: ['sosyal medya dâhisi küçük kız kardeş', 'social-media whizz little sister'], bio: ['On dört yaşında ve abisinin hesaplarını o yönetiyor; takipçi sayılarını her sabah rapor ediyor.', 'Fourteen, runs her brother\'s accounts, and reports the follower count every morning.'] },
-  { gender: 'm', elder: false, personality: ['abisine tapan küçük kardeş', 'little brother who worships him'], bio: ['Altyapı seçmelerine hazırlanıyor ve abisinin her hareketini kopyalıyor — saç modeli dahil.', 'Preparing for academy trials and copying his big brother\'s every move — haircut included.'] },
-  { gender: 'f', elder: true, personality: ['avukat abla, ailenin aklı', 'lawyer big sister, the family brains'], bio: ['Hukuk okudu; menajerin gönderdiği her sözleşmede kırmızı kalem onun elinde.', 'Studied law; every contract the agent sends comes back covered in her red pen.'] },
-];
-
 const FATHER_JOBS: [string, string][] = [['otobüs şoförü', 'bus driver'], ['marangoz', 'carpenter'], ['fırıncı', 'baker'], ['balıkçı', 'fisherman'], ['elektrikçi', 'electrician'], ['taksici', 'taxi driver']];
 
 const FLAVOR_FATHER: Partial<Record<GenesisFlavor, Role>> = {
@@ -559,8 +552,6 @@ export function templateGenesis(input: GenesisInput): GenesisResult {
   const job = rng.pick(FATHER_JOBS);
   const fatherName = `${firstName(rng, culture, 'm', true)} ${familyName}`;
   const motherName = `${firstName(rng, culture, 'f', true)} ${ownSurnameMother ? lastName(rng, culture) : familyName}`;
-  const sib = rng.pick(SIBLINGS);
-  const siblingName = `${firstName(rng, culture, sib.gender, false)} ${familyName}`;
 
   const slots: Slots = {
     first: input.firstName,
@@ -572,30 +563,19 @@ export function templateGenesis(input: GenesisInput): GenesisResult {
     rival: input.rivalName,
     rivalClub: input.rivalClub,
     mentor: input.mentorName ?? '',
-    father: (singleMother ? motherName : fatherName).split(' ')[0],
+    father: fatherName.split(' ')[0],
     mother: motherName.split(' ')[0],
-    sibling: siblingName.split(' ')[0],
     coach: `${firstName(rng, culture, 'm', true)} ${lastName(rng, culture)}`,
     job: L(lang, job),
   };
 
-  const family: GenesisResult['family'] = [];
-  if (!singleMother) {
-    const fr = FLAVOR_FATHER[flavor] ?? rng.pick(FATHERS);
-    family.push({ name: fatherName, role: 'father', personality: L(lang, fr.personality), bio: fill(L(lang, fr.bio), slots, rng, lang) });
-    const mr = rng.pick(MOTHERS);
-    family.push({ name: motherName, role: 'mother', personality: L(lang, mr.personality), bio: fill(L(lang, mr.bio), slots, rng, lang) });
-    if (rng.chance(0.6) || flavor === 'second_chance') {
-      family.push({ name: siblingName, role: 'sibling', personality: L(lang, sib.personality), bio: fill(L(lang, sib.bio), slots, rng, lang) });
-    }
-  } else {
-    family.push({ name: motherName, role: 'mother', personality: L(lang, SINGLE_MOTHER.personality), bio: fill(L(lang, SINGLE_MOTHER.bio), slots, rng, lang) });
-    family.push({ name: siblingName, role: 'sibling', personality: L(lang, sib.personality), bio: fill(L(lang, sib.bio), slots, rng, lang) });
-    if (rng.chance(0.35)) {
-      const other = SIBLINGS.find((s) => s !== sib && s.gender !== sib.gender) ?? SIBLINGS[0];
-      family.push({ name: `${firstName(rng, culture, other.gender)} ${familyName}`, role: 'sibling', personality: L(lang, other.personality), bio: fill(L(lang, other.bio), slots, rng, lang) });
-    }
-  }
+  // family: exactly two people, a father and a mother (no siblings; the life of the game is the player, not a crowd)
+  const fr = FLAVOR_FATHER[flavor] ?? rng.pick(FATHERS);
+  const mr = singleMother ? SINGLE_MOTHER : rng.pick(MOTHERS);
+  const family: GenesisResult['family'] = [
+    { name: fatherName, role: 'father', personality: L(lang, fr.personality), bio: fill(L(lang, fr.bio), slots, rng, lang) },
+    { name: motherName, role: 'mother', personality: L(lang, mr.personality), bio: fill(L(lang, mr.bio), slots, rng, lang) },
+  ];
 
   // agent: usually a compatriot, sometimes an international operator
   const agentCulture: Culture = rng.chance(0.7) ? culture : rng.pick<Culture>(['en', 'it', 'pt', 'es', 'de']);

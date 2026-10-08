@@ -1,7 +1,9 @@
-/** The player's social circle (manager, mentor, rival, agent, family, partner …) built from the save. */
+/**
+ * The player's (deliberately small) circle: the manager (head coach), the agent, mother, father and at most ONE partner.
+ * Friends, siblings, journalists, directors, mentor and rival may exist in a save, but are never surfaced.
+ */
 import type { GameState, ManagerTemperament, PersonRole, RelKey } from '../../../core/types';
 import type { PersonaKind } from '../../../core/narrative-types';
-import { fullName } from '../../../core/util';
 
 export type CircleRole = PersonRole | 'manager' | 'mentor' | 'rival';
 export type CircleGroup = 'work' | 'family' | 'rival';
@@ -22,8 +24,6 @@ export interface CircleEntry {
   relKey?: RelKey;
 }
 
-const FAMILY_ROLES: PersonRole[] = ['father', 'mother', 'sibling'];
-
 export function buildCircle(state: GameState): CircleEntry[] {
   const c = state.career;
   const p = state.world.players[c.playerId];
@@ -36,13 +36,6 @@ export function buildCircle(state: GameState): CircleEntry[] {
       temperament: mgr.temperament, relationship: c.relationships.manager, relKey: 'manager',
     });
   }
-  const mentor = c.mentorId ? state.world.players[c.mentorId] : null;
-  if (mentor) {
-    out.push({
-      id: `mentor-${mentor.id}`, persona: 'mentor', role: 'mentor', group: 'work', name: fullName(mentor), footballerId: mentor.id,
-      bio: c.genesis.mentorBlurb, relationship: c.relationships.teammates, relKey: 'teammates',
-    });
-  }
   const agent = c.people.find((x) => x.role === 'agent') ?? c.genesis.agent;
   if (agent) {
     out.push({
@@ -50,21 +43,16 @@ export function buildCircle(state: GameState): CircleEntry[] {
       relationship: agent.relationship ?? c.relationships.agent, relKey: 'agent',
     });
   }
-  for (const x of c.people) {
-    if (x.id === agent?.id) continue;
-    if (x.role === 'director' || x.role === 'journalist') {
-      out.push({ id: x.id, persona: null, role: x.role, group: 'work', name: x.name, personality: x.personality, bio: x.bio, relationship: x.relationship });
-    }
+  // Parents: one mother, one father (the chat with "family" is a chat with both of them).
+  for (const role of ['mother', 'father'] as const) {
+    const x = c.people.find((q) => q.role === role);
+    if (!x) continue;
+    out.push({
+      id: x.id, persona: 'family', role, group: 'family', name: x.name,
+      personality: x.personality, bio: x.bio, relationship: x.relationship, relKey: 'family',
+    });
   }
-  const firstFamily = c.people.find((x) => FAMILY_ROLES.includes(x.role));
-  for (const x of c.people) {
-    if (FAMILY_ROLES.includes(x.role)) {
-      out.push({
-        id: x.id, persona: x.id === firstFamily?.id ? 'family' : null, role: x.role, group: 'family', name: x.name,
-        personality: x.personality, bio: x.bio, relationship: x.relationship, relKey: 'family',
-      });
-    }
-  }
+  // At most one partner: the current one, or a legacy-save partner if none is flagged.
   const partner = c.people.find((x) => x.id === c.partnerId) ?? c.people.find((x) => x.role === 'partner');
   if (partner) {
     out.push({
@@ -72,14 +60,14 @@ export function buildCircle(state: GameState): CircleEntry[] {
       bio: partner.bio, relationship: partner.relationship ?? c.relationships.partner, relKey: 'partner',
     });
   }
-  for (const x of c.people) {
-    if (x.role === 'friend') out.push({ id: x.id, persona: null, role: 'friend', group: 'family', name: x.name, personality: x.personality, bio: x.bio, relationship: x.relationship });
-  }
-  const rival = state.world.players[c.rivalId];
-  if (rival) {
-    out.push({ id: `rival-${rival.id}`, persona: 'rival', role: 'rival', group: 'rival', name: fullName(rival), footballerId: rival.id, bio: c.genesis.rivalBlurb });
-  }
   return out;
+}
+
+/** The parents share one conversation: its drawer is titled "Anne & Baba" instead of a single name. */
+export function chatEntryFor(circle: CircleEntry[], e: CircleEntry): CircleEntry {
+  if (e.persona !== 'family') return e;
+  const names = circle.filter((x) => x.persona === 'family').map((x) => x.name);
+  return names.length > 1 ? { ...e, name: names.join(' & ') } : e;
 }
 
 /** Fallback relationship band (0..4) used when the career module's label is unavailable. */

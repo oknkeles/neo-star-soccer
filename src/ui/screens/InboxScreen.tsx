@@ -32,7 +32,7 @@ function Actions({ state, m }: { state: GameState; m: InboxMessage }) {
     const open = offer && (offer.status === 'pending' || offer.status === 'negotiating');
     return (
       <div className="flex flex-wrap items-center gap-3">
-        <Button variant="primary" icon="handshake" onClick={() => navigate('transfers', { offer: ref.id })}>{t('shell.inbox.viewOffer')}</Button>
+        {(open || !offer) && <Button variant="primary" icon="handshake" onClick={() => navigate('transfers', { offer: ref.id })}>{t('shell.inbox.viewOffer')}</Button>}
         {offer && !open && <Badge tone="neutral">{t(`shell.inbox.offerStatus.${offer.status}`)}</Badge>}
       </div>
     );

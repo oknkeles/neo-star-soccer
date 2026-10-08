@@ -1,34 +1,54 @@
-/** The player's circle (manager, mentor, agent, family, rival) and the local money log. */
+/** The player's small circle (manager, agent, parents, one partner) and the local money log. */
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeTestState } from '../../../../core/testing';
 import type { Person } from '../../../../core/types';
-import { buildCircle, relBand } from '../circle';
+import { buildCircle, chatEntryFor, relBand } from '../circle';
 import { loadMoney, mergePoint, projectMoney, recordMoney } from '../moneylog';
 
 const person = (id: string, role: Person['role']): Person => ({ id, name: `${role} ${id}`, role, personality: 'warm', bio: 'bio', relationship: 55 });
 
 describe('buildCircle', () => {
-  it('lists manager, mentor, agent and rival for a fresh career', () => {
+  it('lists only the manager and the agent for a fresh career (no mentor, rival, director, journalist)', () => {
     const state = makeTestState();
+    state.career.people.push(person('D1', 'director'), person('J1', 'journalist'));
     const circle = buildCircle(state);
     const roles = circle.map((e) => e.role);
     expect(roles).toContain('manager');
-    expect(roles).toContain('mentor');
     expect(roles).toContain('agent');
-    expect(roles).toContain('rival');
+    for (const r of ['mentor', 'rival', 'director', 'journalist', 'friend', 'sibling'] as const) expect(roles).not.toContain(r);
     expect(circle.find((e) => e.role === 'manager')?.persona).toBe('manager');
-    expect(circle.find((e) => e.role === 'rival')?.group).toBe('rival');
   });
 
-  it('opens chats only for the first family member and the partner', () => {
+  it('shows mother, father and one partner; hides siblings and friends', () => {
     const state = makeTestState();
-    state.career.people.push(person('F1', 'father'), person('F2', 'mother'), person('P1', 'partner'), person('FR', 'friend'));
+    state.career.people.push(person('F1', 'father'), person('F2', 'mother'), person('S1', 'sibling'), person('P1', 'partner'), person('FR', 'friend'));
     state.career.partnerId = 'P1';
     const circle = buildCircle(state);
-    expect(circle.filter((e) => e.persona === 'family')).toHaveLength(1);
+    const roles = circle.map((e) => e.role);
+    expect(roles).toEqual(expect.arrayContaining(['mother', 'father', 'partner']));
+    expect(roles).not.toContain('sibling');
+    expect(roles).not.toContain('friend');
+    expect(circle.filter((e) => e.persona === 'family').map((e) => e.role).sort()).toEqual(['father', 'mother']);
     expect(circle.find((e) => e.role === 'partner')?.persona).toBe('partner');
-    expect(circle.find((e) => e.role === 'friend')?.persona).toBeNull();
-    expect(circle.filter((e) => e.group === 'family').length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('never shows more than one partner', () => {
+    const state = makeTestState();
+    state.career.people.push(person('P1', 'partner'), person('P2', 'partner'));
+    state.career.partnerId = 'P2';
+    const partners = buildCircle(state).filter((e) => e.role === 'partner');
+    expect(partners).toHaveLength(1);
+    expect(partners[0].id).toBe('P2');
+  });
+
+  it('titles the shared parents chat with both names', () => {
+    const state = makeTestState();
+    state.career.people.push(person('F1', 'father'), person('F2', 'mother'));
+    const circle = buildCircle(state);
+    const parent = circle.find((e) => e.role === 'father')!;
+    expect(chatEntryFor(circle, parent).name).toBe('mother F2 & father F1');
+    const mgr = circle.find((e) => e.role === 'manager');
+    if (mgr) expect(chatEntryFor(circle, mgr)).toBe(mgr);
   });
 
   it('works for a free agent (no manager)', () => {

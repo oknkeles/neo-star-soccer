@@ -931,7 +931,12 @@ export class GameController {
     this.readOfferMessages(s, offer.id);
     s.flags[FLAG.everSigned] = true;
     if (offer.kind === 'trial') {
-      for (const o of s.offers) if (o !== offer && o.kind === 'trial' && (o.status === 'pending' || o.status === 'negotiating')) o.status = 'withdrawn';
+      // Choosing one trial club withdraws the other invitations AND removes their messages from the inbox.
+      for (const o of s.offers) {
+        if (o !== offer && o.kind === 'trial' && (o.status === 'pending' || o.status === 'negotiating')) o.status = 'withdrawn';
+      }
+      const dropped = new Set(s.offers.filter((o) => o !== offer && o.kind === 'trial' && o.status === 'withdrawn').map((o) => o.id));
+      if (dropped.size) s.inbox = s.inbox.filter((m) => !(m.ref?.type === 'offer' && dropped.has(m.ref.id)));
     }
     const toClubId = p.clubId;
     const club = toClubId ? s.world.clubs[toClubId] : null;

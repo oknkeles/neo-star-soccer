@@ -73,6 +73,12 @@ export class Engine {
   script: MomentScript = { actions: [] };
   /** Set piece: everyone waits for the user's kick. */
   frozen = false;
+  /**
+   * 0..1 casual-play assistance derived from setup.difficulty: 1 on 'easy' (≈0.3), ~0.35 on
+   * 'normal' (≈0.5), 0 on 'hard'. Slows opponents' reactions and pressing, softens the keeper,
+   * makes the user's touch / dribble / execution more forgiving and moments longer.
+   */
+  ease = 0;
   setPiece: 'free_kick' | 'penalty' | 'corner' | null = null;
   introEnd = 0.45;
   possession: Side | null = null;
@@ -108,6 +114,7 @@ export class Engine {
     this.rng = new Rng((setup.seed >>> 0) || 1);
     this.env = physEnv(setup.weather);
     this.attackSide = setup.type === 'defend' ? 'them' : 'us';
+    this.ease = clamp((0.62 - clamp(Number.isFinite(setup.difficulty) ? setup.difficulty : 0.5, 0, 1)) / 0.32, 0, 1);
     this.state = {
       time: 0, timeScale: 1, phase: 'intro', ball: freshBall({ x: 0, y: 0, z: BR }), players: [], focus: 1,
       offsideLineX: null, banner: null, outcome: null,
@@ -137,12 +144,12 @@ export class Engine {
           facing: side === 'us' ? 0 : Math.PI, anim: isGK ? 'gk_ready' : 'idle', animTime: 0, stamina, hasBall: false,
         },
         target: { x: 0, y: 0 }, urgency: 0, duty: 'idle',
-        topSpeed: 5.9 + 3.3 * (clamp(a.pace, 1, 99) / 99),
+        topSpeed: 5.9 + 3.3 * (clamp(a.pace, 1, 99) / 99) + (isUser ? 0.65 * this.ease : 0),
         accel: 3.4 + 4.4 * (clamp(a.acceleration, 1, 99) / 99),
         cool: 0, stun: 0, think: 0.1 + 0.02 * (i % 10), touch: 0, touchPeriod: 0.5, jump: 0, markIdx: -1, receivedFrom: -1,
         carryT: 0, runT: 0, runTarget: null, keeper: isGK ? newKeeperMem() : null,
-        reaction: clamp(0.3 - 0.12 * (a.positioning / 99) - (side === 'them' ? 0.08 * (diff - 0.5) : 0), 0.12, 0.4),
-        animLock: 0, noise: side === 'them' ? 1.25 - 0.5 * diff : 1, eit: Infinity, eitPoint: null, wall: false, passive: false,
+        reaction: clamp(0.3 - 0.12 * (a.positioning / 99) - (side === 'them' ? 0.08 * (diff - 0.5) - 0.12 * this.ease : 0), 0.12, 0.52),
+        animLock: 0, noise: side === 'them' ? 1.25 - 0.5 * diff : isUser ? 1 - 0.35 * this.ease : 1, eit: Infinity, eitPoint: null, wall: false, passive: false,
       };
       this.agents.push(agent);
       this.state.players.push(agent.st);
@@ -367,12 +374,13 @@ export class Engine {
     const b = this.state.ball;
     if (this.owner === a) return { ok: true, kind: 'ground' };
     if (this.owner) return { ok: false, kind: 'ground' };
-    const d = hyp(b.pos.x - a.st.pos.x, b.pos.y - a.st.pos.y);
+    // casual play: the user's one-touch reach is a little more forgiving
+    const d = hyp(b.pos.x - a.st.pos.x, b.pos.y - a.st.pos.y) - (a.isUser ? 0.3 * this.ease : 0);
     const z = b.pos.z;
     if (z <= 0.45 && d <= 1.0) return { ok: true, kind: 'ground' };
     if (z < 1.25 && d <= 1.1) return { ok: true, kind: 'volley' };
     if (z < 1.4 && d <= 0.8) return { ok: true, kind: 'volley' };
-    if (z >= 1.4 && z <= this.headReach(a) && d <= 0.95) return { ok: true, kind: 'header' };
+    if (z >= 1.4 && z <= this.headReach(a) + (a.isUser ? 0.15 * this.ease : 0) && d <= 0.95) return { ok: true, kind: 'header' };
     return { ok: false, kind: z > 1.4 ? 'header' : z > 0.45 ? 'volley' : 'ground' };
   }
 
@@ -619,7 +627,8 @@ export class Engine {
     const D = (c.a.dribbling * 0.65 + c.a.strength * 0.35) / 99;
     const csp = hyp(c.st.vel.x, c.st.vel.y);
     let pWin = 0.46 + 0.62 * (T - D) + (slide ? 0.1 : 0) - (behind ? 0.18 : 0) - (d > 1.0 ? 0.08 : 0) + (csp > 6 ? 0.04 : 0);
-    if (a.side === 'them') pWin += 0.16 * (this.setup.difficulty - 0.5);
+    if (a.side === 'them') pWin += 0.16 * (this.setup.difficulty - 0.5) - 0.12 * this.ease;
+    if (a.isUser) pWin += 0.12 * this.ease;
     if (a.side === 'us' && !a.isUser && this.attackSide === 'them') pWin -= 0.1;
     pWin = clamp(pWin, 0.08, 0.9);
     let pFoul = (behind ? 0.42 : 0.05) + (slide ? 0.1 : 0) + (1 - T) * 0.1;
@@ -757,7 +766,9 @@ export class Engine {
     const vr = hyp(hyp(rvx, rvy), b.vel.z * 0.6);
     const ft = clamp(a.a.firstTouch, 1, 99) / 99;
     const pr = this.pressureOn(a);
-    const diff = Math.max(0, vr - 4.5) / (9 + 17 * ft) + (b.pos.z > 0.6 ? 0.18 : 0) + pr * 0.12 * (1.2 - ft) + (a.side === 'them' ? 0.05 * (0.5 - this.setup.difficulty) : 0);
+    const diff = Math.max(0, vr - 4.5) / (9 + 17 * ft) + (b.pos.z > 0.6 ? 0.18 : 0) + pr * 0.12 * (1.2 - ft) + (a.side === 'them' ? 0.05 * (0.5 - this.setup.difficulty) : 0) - (a.isUser ? 0.12 * this.ease : 0)
+      // team-mates meeting the user's pass at speed: a cleaner first touch
+      - (a.side === 'us' && !a.isUser && this.lastKick?.user && !this.lastKick.isShot ? 0.12 + 0.2 * this.ease : 0);
     const pClean = clamp(1.03 - diff, 0.1, 0.99);
     if (this.rng.chance(pClean)) {
       this.giveBall(a, true);
@@ -838,8 +849,16 @@ export class Engine {
       u.urgency = c.sprint ? 1 : 0.78;
       if (hyp(c.target.x - st.pos.x, c.target.y - st.pos.y) < 0.25) c.target = null;
     } else {
-      u.target = { x: st.pos.x, y: st.pos.y };
-      u.urgency = 0;
+      // no input: run onto a team-mate's pass / cross meant for him (casual-play assist)
+      const k = this.lastKick;
+      if (!this.owner && k && k.side === u.side && k.by !== u.i && k.target === u.i && !k.completed && !k.oppTouched
+        && this.state.time - k.t < 3.5 && u.eitPoint && u.eit < 4) {
+        u.target = { x: u.eitPoint.x, y: u.eitPoint.y };
+        u.urgency = 0.9;
+      } else {
+        u.target = { x: st.pos.x, y: st.pos.y };
+        u.urgency = 0;
+      }
     }
     if (c.sprint && hyp(st.vel.x, st.vel.y) > 0.75 * u.topSpeed) this.log.sprintTime += DT;
     if (!active) return;
@@ -1004,7 +1023,7 @@ export class Engine {
       if (sp > 2.5) {
         const drib = clamp(a.a.dribbling, 1, 99) / 99;
         const pr = this.pressureOn(a);
-        const pHeavy = Math.max(0, sp / a.topSpeed - 0.62) * (1 - drib) * 1.1 + pr * 0.05 * (1 - drib);
+        const pHeavy = (Math.max(0, sp / a.topSpeed - 0.62) * (1 - drib) * 1.1 + pr * 0.05 * (1 - drib)) * (a.isUser ? 1 - 0.75 * this.ease : 1);
         if (this.rng.chance(pHeavy)) {
           // heavy touch: the ball runs away from him
           const fx = Math.cos(st.facing);
@@ -1169,11 +1188,14 @@ export class Engine {
       if (!a.isUser && k && k.isShot && k.side === a.side && k.result === 'pending' && s.time - k.t < 2.5) continue;
       if (a.isUser && (this.ctl.aiming || this.ctl.pending)) continue;
       // AI headers / volleys at goal or clearances
-      if (!a.isUser && z > 1.25 && z <= this.headReach(a) && d < 0.85 && speed > 4) {
+      const crossIn = a.side === 'them' && !!k && k.cross && k.side === 'us' && s.time - k.t < 3;
+      if (!a.isUser && z > 1.25 && z <= this.headReach(a) && d < 0.85 * (crossIn ? 1 - 0.75 * this.ease : 1) && speed > 4) {
         if (d < bestD) { bestD = d; best = a; }
         continue;
       }
-      const reach = z < 0.75 ? 0.78 : z < 1.6 ? 0.5 : 0;
+      let reach = z < 0.75 ? 0.78 : z < 1.6 ? 0.5 : 0;
+      // casual play: opponents cut out fewer of the user's passes
+      if (a.side === 'them' && k && k.user && !k.isShot && s.time - k.t < 3) reach *= 1 - 0.35 * this.ease;
       if (d < reach && d < bestD) { bestD = d; best = a; }
     }
     if (!best) return;
@@ -1243,7 +1265,7 @@ export class Engine {
     if (s.phase === 'outcome' || s.phase === 'ended' || s.phase === 'intro') return;
     const k = this.lastKick;
     const shotLive = !!k && k.isShot && k.result === 'pending' && s.time - k.t < 2.6 && !this.owner;
-    const limit = this.setup.timeLimit > 0 ? this.setup.timeLimit : 15;
+    const limit = this.timeLimitSec();
     if (this.playClock >= limit && !shotLive) {
       this.finish(classify(this, 'time'), 1.2, t('engine.banner.time'));
       return;
@@ -1287,6 +1309,11 @@ export class Engine {
       this.farT += DT;
       if (this.farT > 2.5) this.finish(classify(this, 'stale'), 1.0);
     } else this.farT = 0;
+  }
+
+  /** Seconds of play before the moment auto-ends (longer on easier settings). */
+  timeLimitSec(): number {
+    return (this.setup.timeLimit > 0 ? this.setup.timeLimit : 15) * (1 + 0.55 * this.ease);
   }
 
   private farT = 0;

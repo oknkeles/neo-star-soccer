@@ -43,10 +43,13 @@ export default function Genesis({ state, onNext }: { state: GameState; onNext: (
 
   // After the typewriter ends, reveal the rest section by section.
   useEffect(() => {
-    if (stage < 1 || stage >= 5) return;
-    const id = setTimeout(() => setStage((s) => s + 1), skip ? 120 : 950);
+    if (stage < 1 || stage >= 5 || skip) return;
+    const id = setTimeout(() => setStage((s) => s + 1), 450);
     return () => clearTimeout(id);
   }, [stage, skip]);
+
+  // "Atla": show the whole story at once (text, motto, family, rival, goals and the continue button).
+  const skipAll = () => { setSkip(true); setStage(5); };
 
   return (
     <div className="relative min-h-dvh px-4 py-8 sm:py-12 bg-bg overflow-x-hidden">
@@ -61,7 +64,7 @@ export default function Genesis({ state, onNext }: { state: GameState; onNext: (
         <div className="rounded-3xl border border-line bg-white/4 p-5 sm:p-7">
           <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.16em] font-bold text-ink-mute mb-3"><Icon name="book_open" size={13} />{player.firstName} {player.lastName} · {g.hometown}</div>
           <Typewriter text={g.backstory} className="text-[17px] sm:text-lg leading-relaxed text-ink/95" skip={skip} onDone={() => setStage((s) => (s === 0 ? 1 : s))} />
-          {stage === 0 && <button onClick={() => setSkip(true)} className="mt-3 text-xs text-ink-mute hover:text-ink cursor-pointer">{t('shell.nc.gen.skip')} →</button>}
+          {stage < 5 && <button onClick={skipAll} className="mt-3 inline-flex items-center h-9 px-3 rounded-xl bg-white/6 hover:bg-white/10 text-xs font-semibold text-ink-dim hover:text-ink cursor-pointer">{t('shell.nc.gen.skip')} →</button>}
         </div>
 
         <div className="grid grid-cols-1 gap-4 mt-4">

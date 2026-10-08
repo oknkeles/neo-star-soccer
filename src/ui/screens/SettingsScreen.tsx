@@ -1,7 +1,11 @@
 /** Route 'settings'. Language, AI, display & sound, saves, help. Owner: ui-shell agent. */
 import { useState } from 'react';
 import { t } from '../../core/i18n';
-import { ScreenHeader, Tabs } from '../components/kit';
+import { updateSettings } from '../../core/settings';
+import { useSettings } from '../../game/api';
+import { Card, ScreenHeader, Tabs } from '../components/kit';
+import { Segmented, SettingRow } from '../components/controls';
+import '../../match/view2d/strings';
 import AiSection from './shell/settings/AiSection';
 import { DisplaySoundSection, GeneralSection } from './shell/settings/GeneralSection';
 import SavesSection from './shell/settings/SavesSection';
@@ -20,11 +24,75 @@ export default function SettingsScreen({ params }: { params: Record<string, stri
     <div className="max-w-3xl mx-auto">
       <ScreenHeader title={t('shell.set.title')} subtitle={t('shell.set.subtitle')} icon="settings" backTo="back" />
       <Tabs className="mb-5" value={tab} onChange={(v) => setTab(v as Tab)} tabs={TABS.map((id) => ({ id, label: t(`shell.set.tab.${id}`), icon: ICON[id] }))} />
-      {tab === 'general' && <GeneralSection />}
+      {tab === 'general' && (
+        <div className="grid grid-cols-1 gap-4">
+          <GeneralSection />
+          <MatchSection />
+        </div>
+      )}
       {tab === 'ai' && <AiSection />}
       {tab === 'av' && <DisplaySoundSection />}
       {tab === 'saves' && <SavesSection />}
-      {tab === 'help' && <HelpSection />}
+      {tab === 'help' && (
+        <div className="grid grid-cols-1 gap-4">
+          <ControlsCard />
+          <HelpSection />
+        </div>
+      )}
     </div>
+  );
+}
+
+/** Match view (2D default / 3D) + the 2D controls. */
+function MatchSection() {
+  const s = useSettings();
+  return (
+    <>
+      <Card title={t('v2d.set.title')} icon="gamepad">
+        <SettingRow title={t('v2d.set.view')} desc={t('v2d.set.viewDesc')}>
+          <Segmented
+            options={[{ id: '2d', label: t('v2d.set.2d') }, { id: '3d', label: t('v2d.set.3d') }]}
+            value={s.matchView ?? '2d'} onChange={(v) => updateSettings((x) => { x.matchView = v as '2d' | '3d'; })}
+          />
+        </SettingRow>
+      </Card>
+      {(s.matchView ?? '2d') === '2d' && <ControlsCard />}
+    </>
+  );
+}
+
+const CONTROL_ROWS: [string, string][] = [
+  ['WASD / ← ↑ → ↓', 'v2d.help.move'],
+  ['Shift', 'v2d.help.sprint'],
+  ['SPACE', 'v2d.help.shoot'],
+  ['Q / E', 'v2d.help.curl'],
+  ['F', 'v2d.help.pass'],
+  ['R', 'v2d.help.through'],
+  ['C / SPACE', 'v2d.help.call'],
+  ['SPACE / F', 'v2d.help.defend'],
+  ['W / S', 'v2d.help.setPiece'],
+];
+
+function ControlsCard() {
+  return (
+    <Card title={t('v2d.set.controls')} icon="gamepad">
+      <ul className="space-y-2 text-sm">
+        {CONTROL_ROWS.map(([k, v]) => (
+          <li key={k} className="flex gap-3 items-start">
+            <span className="shrink-0 min-w-[7.5rem] text-right">
+              <kbd className="inline-block rounded-md border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-xs font-bold text-accent">{k}</kbd>
+            </span>
+            <span className="text-ink-dim">{t(v)}</span>
+          </li>
+        ))}
+        <li className="flex gap-3 items-start">
+          <span className="shrink-0 min-w-[7.5rem] text-right">
+            <kbd className="inline-block rounded-md border border-line bg-white/5 px-1.5 py-0.5 text-xs font-bold">{t('v2d.help.mouseKey')}</kbd>
+          </span>
+          <span className="text-ink-dim">{t('v2d.help.mouse')}</span>
+        </li>
+        <li className="text-ink-mute text-xs pt-1">{t('v2d.hint.touch')}</li>
+      </ul>
+    </Card>
   );
 }

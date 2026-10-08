@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { hasKey } from '../../../../core/i18n';
 import { SCREENS, FULLSCREEN } from '../../index';
-import { NAV, NAV_BY_ROUTE, PRIMARY_MOBILE } from '../nav';
+import { NAV, NAV_BY_ROUTE, NAV_MAIN, NAV_MORE, PRIMARY_MOBILE } from '../nav';
 import '../strings';
 
 describe('navigation config', () => {
@@ -22,6 +22,11 @@ describe('navigation config', () => {
     expect(PRIMARY_MOBILE).toHaveLength(4);
     for (const r of PRIMARY_MOBILE) expect(NAV_BY_ROUTE[r]).toBeDefined();
     expect(NAV.length - PRIMARY_MOBILE.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('keeps the sidebar to seven essentials plus a "Daha fazla" group of five', () => {
+    expect(NAV_MAIN.map((n) => n.route)).toEqual(['hub', 'inbox', 'training', 'transfers', 'competitions', 'career', 'people']);
+    expect(NAV_MORE.map((n) => n.route)).toEqual(['lifestyle', 'news', 'social', 'club', 'settings']);
   });
 
   it('lists the twelve destinations the brief asks for', () => {

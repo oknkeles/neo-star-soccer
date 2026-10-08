@@ -52,7 +52,7 @@ export const CULTURE_EVENTS: EventDef[] = [
   },
   {
     id: 'mahalle_maci', icon: 'footprints', cooldown: 40, weight: 4, persona: (f) => f.npc('friend'),
-    when: (f) => (f.phase === 'summer' || (f.intlBreak && !f.calledUp)) && f.age <= 30,
+    when: (f) => (f.turkish || inTurkey(f)) && (f.phase === 'summer' || (f.intlBreak && !f.calledUp)) && f.age <= 30,
     title: L('Mahalle Maçı', 'Back to the Old Pitch'),
     body: L(
       'Çocukluk arkadaşın {friend} yazdı: "Akşam eski sahada maç var, bütün mahalle gelecek. Sen de gel, eski günlerdeki gibi!" Kulübün sözleşmende "riskli aktiviteler" diye bir madde var ama...',
@@ -73,7 +73,7 @@ export const CULTURE_EVENTS: EventDef[] = [
   },
   {
     id: 'first_coach_call', icon: 'phone', cooldown: 999, weight: 5, persona: (f) => f.npc('firstCoach'),
-    when: (f) => f.fame >= 15 && f.seasonApps >= 3,
+    when: (f) => (f.turkish || inTurkey(f)) && f.fame >= 15 && f.seasonApps >= 3,
     title: L('İlk Hocandan Telefon', 'A Call from Your First Coach'),
     body: L(
       'Ekranda yıllardır görmediğin bir isim: {coach}. Seni o tozlu sahada ilk keşfeden adam. Sesi titriyor: "Maçlarını izliyorum evlat. Bizim kulübün çocuklara forma alacak parası kalmadı, bir uğrar mısın?"',
@@ -137,7 +137,7 @@ export const CULTURE_EVENTS: EventDef[] = [
   },
   {
     id: 'nazar_boncugu', icon: 'eye', cooldown: 16, weight: 6, persona: (f) => f.npc('grandma'),
-    when: (f) => f.loseStreak >= 2 || (f.lastRating !== null && f.lastRating < 5.8),
+    when: (f) => (f.turkish || inTurkey(f)) && (f.loseStreak >= 2 || (f.lastRating !== null && f.lastRating < 5.8)),
     title: L('Babaanneden Nazar Boncuğu', 'An Evil-Eye Charm from Grandma'),
     body: L(
       'Kargodan küçük bir paket çıktı: kocaman bir nazar boncuğu, bir şişe kolonya ve titrek bir el yazısı: "Seni çok gözlediler yavrum. Bunu dolabına as. — {grandma}"',
@@ -233,7 +233,7 @@ export const CULTURE_EVENTS: EventDef[] = [
   },
   {
     id: 'grandma_tv', icon: 'tv', cooldown: 999, weight: 3, persona: (f) => f.npc('grandma'),
-    when: (f) => f.seasonApps >= 2 && f.hasFixture,
+    when: (f) => (f.turkish || inTurkey(f)) && f.seasonApps >= 2 && f.hasFixture,
     title: L('Babaannenin Ricası', 'Grandma\'s Request'),
     body: L(
       '{grandma} aradı: "Yavrum, bu akşam maçı köyde bütün komşularla izleyeceğiz. Gol atarsan kameraya el salla, herkes görsün!"',

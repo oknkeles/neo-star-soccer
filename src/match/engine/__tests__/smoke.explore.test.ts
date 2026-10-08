@@ -27,5 +27,5 @@ it('explore', () => {
     }
     lines.push(`IDLE ${type}: unfinished=${unfinished} ${JSON.stringify(counts)}`);
   }
-  require('fs').writeFileSync('/private/tmp/claude-501/-Users-oknkeles-Nss/8f0f2e16-af2c-429b-9382-41f931f3d1a0/scratchpad/explore.txt', lines.join('\n'));
-});
+  if (process.env.EXPLORE_OUT) require('fs').writeFileSync(process.env.EXPLORE_OUT, lines.join('\n'));
+}, 120000);

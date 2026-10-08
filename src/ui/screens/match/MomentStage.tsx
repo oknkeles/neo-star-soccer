@@ -1,12 +1,15 @@
 /**
- * Hosts one real-time moment: creates the engine, mounts the three.js view into a full-bleed
- * container and reports the MomentResult exactly once. Falls back (onFail) when WebGL, the
- * engine or the view are unavailable, so the match can always continue.
+ * Hosts one real-time moment: creates the engine, mounts the view into a full-bleed container
+ * and reports the MomentResult exactly once. The default view is the 2D top-down canvas
+ * (easy, assisted controls); the three.js view is used only when settings.matchView === '3d'
+ * (and falls back to 2D without WebGL). Falls back (onFail) when the engine or the view are
+ * unavailable, so the match can always continue.
  */
 import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 import type { CameraMode, MomentEvent, MomentResult, MomentSetup, ReplayFrame } from '../../../core/types';
 import { createMoment, type MomentEngine } from '../../../match/engine/api';
 import { mountMomentView, type MomentViewHandle } from '../../../match/view/api';
+import { mountMomentView2D } from '../../../match/view2d/api';
 import { safeAutoResolve } from '../../../match/flow/api';
 import { HELP_FLAG, hasWebGL, momentRng, readFlag, writeFlag } from './helpers';
 import { useLiveSettings } from './parts';
@@ -60,11 +63,11 @@ export function MomentStage({
     };
 
     try {
-      if (!hasWebGL()) throw new Error('WebGL unavailable');
       engine = createMoment(setup);
       const s = initial.current;
       const showHelp = help.current;
-      handle = mountMomentView(el, engine, setup, {
+      const mount = s.matchView === '3d' && hasWebGL() ? mountMomentView : mountMomentView2D;
+      handle = mount(el, engine, setup, {
         camera: s.camera,
         quality: s.graphics.quality,
         shadows: s.graphics.shadows,

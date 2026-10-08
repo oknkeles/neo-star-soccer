@@ -226,7 +226,8 @@ describe('advanceWeek', () => {
     const report = await g.advanceWeek();
     expect(env.order).toContain('simulateWeek:F1');
     expect(report.userMatches).toEqual(['F1']);
-    expect(report.results.map((r) => r.fixtureId)).toEqual(expect.arrayContaining(['F1', 'F2']));
+    // Only notable results are reported (the user's own matches first; F2 is outside the user's competitions here).
+    expect(report.results.map((r) => r.fixtureId)).toEqual(expect.arrayContaining(['F1']));
     expect(report.moneyDelta).toBe(100);
     expect(s.week).toBe(1);
     expect(s.career.actionsLeft).toBe(3);

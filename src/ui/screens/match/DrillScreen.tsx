@@ -18,7 +18,7 @@ import { Button, Card, toast, clsx } from '../../components/kit';
 import { drillSeed, momentRng, nextCamera, ratingGrade } from './helpers';
 import { useLiveSettings } from './parts';
 import { MomentStage, type StageApi } from './MomentStage';
-import { MomentHud } from './MomentUI';
+import { MomentHud, is2D } from './MomentUI';
 import '../../../match/flow/strings';
 
 type Phase = 'intro' | 'play' | 'done';
@@ -182,9 +182,9 @@ export default function DrillScreen({ params }: { params: Record<string, string>
       </motion.div>
       <Card title={t('match.drill.controls')} icon="gamepad" className="mt-6">
         <ul className="space-y-2.5 text-sm">
-          <li className="flex gap-2.5"><MousePointerClick size={18} className="text-accent shrink-0" />{t('match.drill.ctrl.aim')}</li>
-          <li className="flex gap-2.5"><Footprints size={18} className="text-accent shrink-0" />{t('match.drill.ctrl.move')}</li>
-          <li className="flex gap-2.5"><Hand size={18} className="text-accent shrink-0" />{t('match.drill.ctrl.call')}</li>
+          <li className="flex gap-2.5"><MousePointerClick size={18} className="text-accent shrink-0" />{is2D() ? t('v2d.drill.shoot') : t('match.drill.ctrl.aim')}</li>
+          <li className="flex gap-2.5"><Footprints size={18} className="text-accent shrink-0" />{is2D() ? t('v2d.drill.move') : t('match.drill.ctrl.move')}</li>
+          <li className="flex gap-2.5"><Hand size={18} className="text-accent shrink-0" />{is2D() ? t('v2d.drill.pass') : t('match.drill.ctrl.call')}</li>
         </ul>
       </Card>
       <AnimatePresence>

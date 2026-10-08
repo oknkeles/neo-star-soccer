@@ -170,8 +170,9 @@ function openPlay(e: Engine): void {
   } else {
     giveTo(e, u);
   }
-  if (defs[0]) place(defs[0], B.x + r.float(3.6, 5.5), B.y + r.float(-1.6, 1.6), B);
-  if (defs[1]) place(defs[1], B.x + r.float(6, 9), B.y + (B.y > 0 ? -1 : 1) * r.float(3, 6), B);
+  const room = 2.5 * e.ease;
+  if (defs[0]) place(defs[0], B.x + r.float(3.6, 5.5) + room, B.y + r.float(-1.6, 1.6), B);
+  if (defs[1]) place(defs[1], B.x + r.float(6, 9) + room, B.y + (B.y > 0 ? -1 : 1) * r.float(3, 6), B);
   keepOnside(e, [u]);
 }
 
@@ -215,7 +216,7 @@ function oneOnOne(e: Engine): void {
   const chaser = pickMate(e, 'them', ['CB', 'FB', 'DM'], B);
   for (const a of e.agents) {
     if (a.side !== 'them' || a.isGK) continue;
-    if (a === chaser) place(a, B.x - r.float(1.8, 3.0), B.y + r.float(-1.8, 1.8), B);
+    if (a === chaser) place(a, B.x - r.float(1.8, 3.0) - 1.5 * e.ease, B.y + r.float(-1.8, 1.8), B);
     else place(a, B.x - r.float(6, 26), clamp(a.st.pos.y * 0.8, -28, 28), B);
   }
   if (chaser) chaser.reaction = Math.max(chaser.reaction, 0.25);
@@ -234,7 +235,7 @@ function crossReceive(e: Engine): void {
   const crosser = pickMate(e, 'us', ['W', 'FB', 'AM', 'CM'], C);
   place(u, U.x, U.y, C);
   const cbs = nearestOf(e, 'them', U, 3);
-  if (cbs[0]) place(cbs[0], U.x + 1.1, U.y + side * 0.7, C);
+  if (cbs[0]) place(cbs[0], U.x + 1.1 + 2.2 * e.ease, U.y + side * (0.7 + 1.2 * e.ease), C);
   if (cbs[1]) place(cbs[1], HL - 5, side * 2.5, C);
   if (cbs[2]) place(cbs[2], HL - 8.5, -side * 6, C);
   const other = pickMate(e, 'us', ['ST', 'AM', 'CM'], undefined, crosser ? [crosser] : []);
@@ -246,7 +247,10 @@ function crossReceive(e: Engine): void {
   crosser.target = { x: C.x + 2, y: C.y };
   crosser.urgency = 0.5;
   const fb = nearestOf(e, 'them', C, 1, cbs)[0];
-  if (fb) place(fb, C.x + r.float(3, 4.5), C.y - side * r.float(2, 3.5), C);
+  // casual play: the full-back has been beaten (trails the crosser) instead of standing in the lane
+  const fx = r.float(3, 4.5);
+  const fy = r.float(2, 3.5);
+  if (fb) place(fb, C.x + fx - (fx + 2.5) * e.ease, C.y - side * fy * (1 - 0.6 * e.ease), C);
   keepOnside(e, [crosser]);
   const header = r.chance(0.65);
   e.script.actions.push({

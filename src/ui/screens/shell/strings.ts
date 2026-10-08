@@ -9,8 +9,8 @@ const tr: Record<string, string> = {
 
   // navigation & status
   'nav.hub': 'Merkez', 'nav.inbox': 'Gelen Kutusu', 'nav.training': 'Antrenman', 'nav.lifestyle': 'Yaşam', 'nav.people': 'Çevre',
-  'nav.transfers': 'Transfer', 'nav.competitions': 'Turnuvalar', 'nav.news': 'Haberler', 'nav.social': 'Sosyal', 'nav.career': 'Kariyer',
-  'nav.club': 'Kulüp', 'nav.settings': 'Ayarlar', 'nav.more': 'Diğer', 'nav.save': 'Kaydet', 'nav.mainMenu': 'Ana Menü',
+  'nav.transfers': 'Transfer', 'nav.competitions': 'Lig', 'nav.news': 'Haberler', 'nav.social': 'Sosyal', 'nav.career': 'Kariyer',
+  'nav.club': 'Kulüp', 'nav.settings': 'Ayarlar', 'nav.more': 'Daha fazla', 'nav.save': 'Kaydet', 'nav.mainMenu': 'Ana Menü',
   'nav.saved': 'Oyun kaydedildi', 'nav.saveFail': 'Kayıt başarısız',
   'status.noClub': 'Kulüpsüz', 'status.actions': '{n} aktivite hakkın kaldı',
 
@@ -82,6 +82,7 @@ const tr: Record<string, string> = {
   'hub.rel': 'İlişkiler', 'hub.qa': 'Hızlı Eylemler', 'hub.agent': 'Menajerle Konuş', 'hub.actions': 'Haftalık aktivite hakkı: {n}/{max}',
   'hub.drills': 'Çalışmalar', 'hub.drill.freekick': 'Frikik', 'hub.drill.finishing': 'Bitiriş', 'hub.drill.passing': 'Pas',
   'hub.inbox': 'Gelen Kutusu', 'hub.inboxEmpty': 'Yeni mesaj yok', 'hub.all': 'Tümü',
+  'hub.leaguePos': '{pos}. sıra · {pts} puan', 'hub.eventTag': 'Kararını bekliyor',
   'hub.news': 'Manşetler', 'hub.newsEmpty': 'Henüz haber yok. İlk maçını bekle.', 'hub.aboutYou': 'Senin hakkında',
   'hub.tableP': 'O', 'hub.tableGD': 'Av', 'hub.tablePts': 'P',
   'hub.season': 'Sezon İstatistikleri', 'hub.starts': 'ilk 11', 'hub.avgRating': 'Ort. Puan', 'hub.motm': 'maçın adamı',
@@ -163,7 +164,7 @@ const en: Record<string, string> = {
   'fx.injury': 'Injury', 'fx.weeks': '{n} wk',
 
   'nav.hub': 'Hub', 'nav.inbox': 'Inbox', 'nav.training': 'Training', 'nav.lifestyle': 'Lifestyle', 'nav.people': 'People',
-  'nav.transfers': 'Transfers', 'nav.competitions': 'Competitions', 'nav.news': 'News', 'nav.social': 'Social', 'nav.career': 'Career',
+  'nav.transfers': 'Transfers', 'nav.competitions': 'League', 'nav.news': 'News', 'nav.social': 'Social', 'nav.career': 'Career',
   'nav.club': 'Club', 'nav.settings': 'Settings', 'nav.more': 'More', 'nav.save': 'Save', 'nav.mainMenu': 'Main Menu',
   'nav.saved': 'Game saved', 'nav.saveFail': 'Save failed',
   'status.noClub': 'Free agent', 'status.actions': '{n} activity slots left',
@@ -232,6 +233,7 @@ const en: Record<string, string> = {
   'hub.rel': 'Relationships', 'hub.qa': 'Quick Actions', 'hub.agent': 'Talk to Agent', 'hub.actions': 'Weekly activity slots: {n}/{max}',
   'hub.drills': 'Drills', 'hub.drill.freekick': 'Free kick', 'hub.drill.finishing': 'Finishing', 'hub.drill.passing': 'Passing',
   'hub.inbox': 'Inbox', 'hub.inboxEmpty': 'No new messages', 'hub.all': 'All',
+  'hub.leaguePos': '{pos}. · {pts} pts', 'hub.eventTag': 'Needs your decision',
   'hub.news': 'Headlines', 'hub.newsEmpty': 'No news yet. Wait for your first match.', 'hub.aboutYou': 'About you',
   'hub.tableP': 'P', 'hub.tableGD': 'GD', 'hub.tablePts': 'Pts',
   'hub.season': 'Season Stats', 'hub.starts': 'starts', 'hub.avgRating': 'Avg Rating', 'hub.motm': 'MOTM',

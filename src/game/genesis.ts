@@ -194,7 +194,10 @@ export function fallbackGenesis(rng: Rng, input: GenesisInput): NarratorGenesis 
     dream: t('game.genesis.dream'),
     theme: input.seedFlavor,
     destinyHint: t('game.genesis.destiny'),
-    family: [{ name: `${father.first} ${input.lastName}`, role: 'father', personality: t('game.genesis.fatherPersonality'), bio: t('game.genesis.fatherBio') }],
+    family: [
+      { name: `${father.first} ${input.lastName}`, role: 'father', personality: t('game.genesis.fatherPersonality'), bio: t('game.genesis.fatherBio') },
+      { name: `${t('game.genesis.motherName')} ${input.lastName}`, role: 'mother', personality: t('game.genesis.motherPersonality'), bio: t('game.genesis.motherBio') },
+    ],
     agent: { name: `${agent.first} ${agent.last}`, personality: t('game.genesis.agentPersonality'), bio: t('game.genesis.agentBio') },
     rivalBlurb: t('game.genesis.rivalBlurb', { rival: input.rivalName, club: input.rivalClub }),
     mentorBlurb: '',
@@ -207,23 +210,23 @@ export function buildGenesis(
   state: GameState, rng: Rng, g: NarratorGenesis, hometown: { city: string; clubId: string | null }, fallbackSurname: string,
 ): CareerGenesis {
   const str = (v: unknown, fb: string) => (typeof v === 'string' && v.trim() ? v.trim() : fb);
-  const familyRaw = Array.isArray(g.family) ? g.family.slice(0, 4) : [];
-  const family: Person[] = familyRaw
-    .filter((f) => f && typeof f.name === 'string')
-    .map((f) => ({
+  const familyRaw = Array.isArray(g.family) ? g.family.slice(0, 6) : [];
+  const parent = (role: 'father' | 'mother', fallbackName: string, personalityKey: string, bioKey: string): Person => {
+    const f = familyRaw.find((x) => x && x.role === role && typeof x.name === 'string' && x.name.trim());
+    return {
       id: nextId(state, 'PER'),
-      name: f.name.trim(),
-      role: f.role === 'mother' || f.role === 'sibling' ? f.role : 'father',
-      personality: str(f.personality, ''),
-      bio: str(f.bio, ''),
-      relationship: rng.int(62, 88),
-    }));
-  if (!family.length) {
-    family.push({
-      id: nextId(state, 'PER'), name: `${t('game.genesis.parentName')} ${fallbackSurname}`, role: 'father',
-      personality: t('game.genesis.fatherPersonality'), bio: t('game.genesis.fatherBio'), relationship: 78,
-    });
-  }
+      name: f ? f.name.trim() : fallbackName,
+      role,
+      personality: str(f?.personality, t(personalityKey)),
+      bio: str(f?.bio, t(bioKey)),
+      relationship: f ? rng.int(62, 88) : 78,
+    };
+  };
+  // Exactly two family members: a mother and a father. Siblings and extras the narrator may add are dropped.
+  const family: Person[] = [
+    parent('mother', `${t('game.genesis.motherName')} ${fallbackSurname}`, 'game.genesis.motherPersonality', 'game.genesis.motherBio'),
+    parent('father', `${t('game.genesis.parentName')} ${fallbackSurname}`, 'game.genesis.fatherPersonality', 'game.genesis.fatherBio'),
+  ];
   const agent: Person = {
     id: nextId(state, 'PER'),
     name: str(g.agent?.name, t('game.genesis.agentFallbackName')),

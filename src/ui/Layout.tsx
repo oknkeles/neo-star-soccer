@@ -4,7 +4,7 @@
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Ellipsis, LogOut, Save } from 'lucide-react';
+import { ChevronDown, Ellipsis, LogOut, Save } from 'lucide-react';
 import { t } from '../core/i18n';
 import { game, useGame } from '../game/api';
 import { navigate, useRoute, type RouteName } from './router';
@@ -12,7 +12,7 @@ import Avatar from './components/Avatar';
 import { clsx, toast } from './components/kit';
 import StatusStrip from './screens/shell/StatusStrip';
 import { DEFAULT_KIT, errText, posShort, useAgenda, useLang, userView } from './screens/shell/helpers';
-import { NAV, PRIMARY_MOBILE, type NavItem } from './screens/shell/nav';
+import { NAV, NAV_MAIN, NAV_MORE, PRIMARY_MOBILE, type NavItem } from './screens/shell/nav';
 import './screens/shell/strings';
 
 function badgeFor(route: RouteName, unread: number, events: number): number {
@@ -96,6 +96,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const { state } = useGame();
   const agenda = useAgenda();
   const [more, setMore] = useState(false);
+  const [group, setGroup] = useState(false);
   useEffect(() => { setMore(false); }, [route.name]);
   const v = userView(state);
   const unread = agenda?.unread ?? 0;
@@ -119,6 +120,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   if (!state) return <div key={lang} className="min-h-full max-w-6xl mx-auto px-4 py-6">{children}</div>;
 
   const moreActive = !PRIMARY_MOBILE.includes(route.name) && NAV.some((n) => n.route === route.name);
+  // The sidebar's "Daha fazla" group opens by itself when you are on one of its screens.
+  const groupOpen = group || NAV_MORE.some((n) => n.route === route.name);
 
   return (
     <div key={lang} className="min-h-full flex">
@@ -128,7 +131,16 @@ export default function Layout({ children }: { children: ReactNode }) {
           <span className="font-display text-2xl leading-[0.9] tracking-wide">NEO STAR<br /><span className="text-accent">SOCCER</span></span>
         </button>
         <nav className="flex flex-col gap-0.5 overflow-y-auto -mx-1 px-1">
-          {NAV.map((n) => <SideItem key={n.route} item={n} active={route.name === n.route} badge={badgeFor(n.route, unread, events)} />)}
+          {NAV_MAIN.map((n) => <SideItem key={n.route} item={n} active={route.name === n.route} badge={badgeFor(n.route, unread, events)} />)}
+          <button
+            onClick={() => setGroup((o) => !o)}
+            aria-expanded={groupOpen}
+            className="mt-2 flex items-center gap-2 h-9 px-3 rounded-xl text-[11px] font-bold uppercase tracking-[0.14em] text-ink-mute hover:text-ink cursor-pointer text-left"
+          >
+            <span className="flex-1">{t('shell.nav.more')}</span>
+            <ChevronDown size={14} className={clsx('transition-transform', groupOpen && 'rotate-180')} />
+          </button>
+          {groupOpen && NAV_MORE.map((n) => <SideItem key={n.route} item={n} active={route.name === n.route} badge={badgeFor(n.route, unread, events)} />)}
         </nav>
         <div className="mt-auto pt-3 border-t border-line flex flex-col gap-2">
           {v && (
