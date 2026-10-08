@@ -8,7 +8,7 @@ import { setLang } from './i18n';
  */
 const KEY = 'nss.settings.v1';
 /** Bump to migrate stored settings once (see load()). */
-const VERSION = 2;
+const VERSION = 3;
 
 export const AI_MODELS = [
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
@@ -34,6 +34,7 @@ export function defaultSettings(): Settings {
     slowmoAim: false,
     matchSpeed: 2,
     matchView: '3d',
+    controlMode: 'calm',
     version: VERSION,
   };
 }
@@ -58,6 +59,10 @@ function load(): Settings {
       if (parsed.graphics?.quality === 'high') parsed.graphics = { ...parsed.graphics, quality: 'medium' };
       if (parsed.matchSpeed === undefined || parsed.matchSpeed === 1) parsed.matchSpeed = 2;
       parsed.slowmoAim = false;
+    }
+    if ((parsed.version ?? 0) < 3) {
+      // v3: the calm "stop & draw" controls become the default once (fast stays selectable)
+      parsed.controlMode = 'calm';
     }
     parsed.version = VERSION;
     return {

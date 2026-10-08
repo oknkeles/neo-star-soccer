@@ -24,9 +24,14 @@ export interface StageApi {
 }
 
 export function MomentStage({
-  setup, apiRef, onResult, onFail, onEvent, children,
+  setup, apiRef, onResult, onFail, onEvent, hold = false, children,
 }: {
   setup: MomentSetup;
+  /**
+   * Mounted but held (paused, under the intro card): the stadium is built and the shaders are
+   * compiled before the moment starts, so the intro → moment switch has no blank / janky frames.
+   */
+  hold?: boolean;
   apiRef: RefObject<StageApi | null>;
   onResult: (r: MomentResult) => void;
   onFail: (err: unknown) => void;
@@ -40,10 +45,16 @@ export function MomentStage({
   // settings are read once per moment (camera changes go through the api)
   const initial = useRef(settings);
   const help = useRef(!readFlag(HELP_FLAG));
+  const handleRef = useRef<MomentViewHandle | null>(null);
+  const holdRef = useRef(hold);
+  holdRef.current = hold;
+  // first moment ever: the controls help card opens with the view, so build it only once the
+  // intro is gone (a key press under the intro card would close the help unseen)
+  const defer = hold && help.current;
 
   useEffect(() => {
     const el = box.current;
-    if (!el) return;
+    if (!el || defer) return;
     let engine: MomentEngine;
     let handle: MomentViewHandle | null = null;
     let done = false;
@@ -76,6 +87,8 @@ export function MomentStage({
         onFinished: finish,
       });
       if (showHelp) writeFlag(HELP_FLAG);
+      handleRef.current = handle;
+      if (holdRef.current) handle.pause(true);
     } catch (err) {
       try { handle?.dispose(); } catch { /* ignore */ }
       // defer so the parent is not updated during its own commit
@@ -119,12 +132,18 @@ export function MomentStage({
       clearInterval(watch);
       timers.forEach((id) => clearTimeout(id));
       apiRef.current = null;
+      handleRef.current = null;
       try { handle?.dispose(); } catch { /* ignore */ }
     };
-  }, [setup, apiRef]);
+  }, [setup, apiRef, defer]);
+
+  // release the hold when the moment starts
+  useEffect(() => {
+    try { handleRef.current?.pause(hold); } catch { /* ignore */ }
+  }, [hold]);
 
   return (
-    <div className="fixed inset-0 z-40 bg-black select-none touch-none">
+    <div className={`fixed inset-0 ${hold ? 'z-30' : 'z-40'} bg-black select-none touch-none`}>
       <div ref={box} className="absolute inset-0" />
       {children}
     </div>

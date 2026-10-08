@@ -13,13 +13,22 @@
  *  - R: through ball (without the ball: ask for one) · C: call for the ball.
  *  - Set pieces: W / S move the target along the goal line.
  *  - Mouse: click the pitch = run there. Mouse aiming only with `mouseAim`.
+ *
+ * "Sakin" (calm, the default control mode, settings.controlMode): SPACE (or F) with the ball —
+ * or with a loose ball / incoming pass in reach — FREEZES the game and opens the aim (see
+ * calm.ts): draw the kick with the mouse / finger (direction, length = power, bend = curl) or
+ * set it with the keys (A / D direction, W / S power, Q / E curl, Z loft), SPACE / Enter /
+ * releasing the mouse = kick, Esc = cancel. Running, calling for the ball etc. stay real-time.
  */
 import type { KickParams, Vec2, Vec3 } from '../../core/types';
 import {
-  assistInfo, assistPass, assistShot, assistShotDir, kickDir, pickPass, type AssistInfo, type MomentEngine, type PassPick,
+  assistInfo, assistPass, assistShot, assistShotDir, goalBound, kickDir, pickPass, type AssistInfo, type MomentEngine, type PassPick,
 } from '../engine/api';
+import type { AimAnalysis } from '../engine/aim';
 import { audio } from '../../audio/api';
 import { t } from '../../core/i18n';
+import { getSettings } from '../../core/settings';
+import { CalmAim, type AimSrc } from './calm';
 import '../view2d/strings';
 
 const CHARGE_TIME = 0.6;
@@ -36,6 +45,22 @@ interface Charge { t: number; src: Src; curl: number; aim: Vec2 | null; startAim
 
 export type ControlsMode = 'attack' | 'noBall' | 'defend' | 'setPiece' | 'corner';
 
+/** The frozen calm-mode aim (what the views draw while the game is stopped). */
+export interface CalmOverlay {
+  analysis: AimAnalysis;
+  /** Bumped when the analysis changed (rebuild the path only then). */
+  version: number;
+  /** Shown kick (after the pass assist). */
+  power: number;
+  curl: number;
+  loftIdx: number;
+  /** The stroke being / last drawn (pitch frame; the ball is its implicit start), null = keys. */
+  stroke: readonly Vec2[] | null;
+  drawing: boolean;
+  src: AimSrc;
+  intent: 'shot' | 'pass' | 'setPiece';
+}
+
 export interface ControlsOverlay {
   charge: { value: number; curl: number; chip: boolean; params: KickParams | null; path: Vec3[] } | null;
   pass: PassPick | null;
@@ -43,6 +68,8 @@ export interface ControlsOverlay {
   mode: ControlsMode;
   aimPoint: Vec2 | null;
   touch: boolean;
+  /** Calm mode: the game is stopped and the user sets his kick. */
+  calm: CalmOverlay | null;
 }
 
 export interface ControlsOptions {
@@ -54,9 +81,39 @@ export interface ControlsOptions {
   axes?: () => { up: Vec2; right: Vec2 };
   /** The cursor aims shots / passes (off by default: kicks follow the running direction). */
   mouseAim?: boolean;
+  /** Control mode override (default: settings.controlMode, 'calm'). */
+  controlMode?: 'calm' | 'fast';
 }
 
-/** Key → help text rows of the scheme (Settings, help cards). Keys are i18n keys. */
+/** The control mode in the settings ('calm' unless the player picked 'fast'). */
+export function controlMode(): 'calm' | 'fast' {
+  try { return getSettings().controlMode === 'fast' ? 'fast' : 'calm'; } catch { return 'calm'; }
+}
+
+/** Key → help text rows of the calm scheme (Settings, help cards). Keys are i18n keys. */
+export const CALM_ROWS: [string, string][] = [
+  ['WASD / ← ↑ → ↓', 'v2d.help.move'],
+  ['Shift', 'v2d.help.sprint'],
+  ['SPACE', 'v2d.calm.space'],
+  ['v2d.help.mouseKey', 'v2d.calm.draw'],
+  ['A / D · W / S', 'v2d.calm.keys'],
+  ['Q / E · Z', 'v2d.calm.curlLoft'],
+  ['SPACE / Enter · Esc', 'v2d.calm.confirm'],
+  ['F', 'v2d.calm.f'],
+  ['SPACE / F', 'v2d.help.defend'],
+];
+
+/** The key column of a help row (may be an i18n key itself). */
+export function keyLabel(k: string): string {
+  return k.startsWith('v2d.') ? t(k) : k;
+}
+
+/** Help rows of a control mode (the first column may itself be an i18n key). */
+export function controlRows(mode: 'calm' | 'fast' = controlMode()): [string, string][] {
+  return mode === 'calm' ? CALM_ROWS : CONTROL_ROWS;
+}
+
+/** Key → help text rows of the fast (real-time) scheme. Keys are i18n keys. */
 export const CONTROL_ROWS: [string, string][] = [
   ['WASD / ← ↑ → ↓', 'v2d.help.move'],
   ['Shift', 'v2d.help.sprint'],
@@ -73,6 +130,8 @@ const isTyping = (el: EventTarget | null) =>
   el instanceof HTMLElement && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
 
 const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyF', 'KeyR', 'KeyC', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight']);
+/** Extra keys used only while the calm aim is open. */
+const AIM_KEYS = new Set(['KeyZ', 'Enter', 'NumpadEnter', 'Escape']);
 
 export class Controls {
   private keys = new Set<string>();
@@ -101,6 +160,18 @@ export class Controls {
   private chipHeld = false;
   /** Set when the user did something (hides the hint). */
   acted = 0;
+  // ── calm mode ──
+  private aim: CalmAim | null = null;
+  /** Keys already held when the aim opened (no aim adjustment until pressed again). */
+  private aimHeld = new Set<string>();
+  /** Keys pressed while aiming (no movement until released). */
+  private aimKeys = new Set<string>();
+  private aimPointer: number | null = null;
+  private rotHold = 0;
+  private wheelAcc = 0;
+  private wheelT = -9;
+  private forceDir = false;
+  private setPieceAimed = false;
 
   constructor(private engine: MomentEngine, private surface: HTMLElement, private opts: ControlsOptions) {
     const on = <K extends keyof WindowEventMap>(tg: Window | HTMLElement, ev: K, fn: (e: WindowEventMap[K]) => void, o?: AddEventListenerOptions) => {
@@ -115,6 +186,7 @@ export class Controls {
     on(window, 'pointerup', (e) => this.onPointerUp(e));
     on(surface, 'pointerleave', () => { this.mouse.inside = false; });
     on(surface, 'contextmenu', (e) => e.preventDefault());
+    on(surface, 'wheel', (e) => this.onWheel(e), { passive: false });
     try {
       this.touchMode = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches && !matchMedia('(pointer: fine)').matches;
     } catch { this.touchMode = false; }
@@ -144,8 +216,18 @@ export class Controls {
     return !!this.opts.mouseAim && !this.touchMode && this.mouse.inside && !!this.mouse.world && this.clock - this.mouse.moved < MOUSE_ACTIVE;
   }
 
+  /** Calm controls ("stop & draw") on? */
+  get calm(): boolean {
+    return (this.opts.controlMode ?? controlMode()) === 'calm';
+  }
+
+  /** The calm aim is open (the game is stopped). */
+  get aiming(): boolean { return this.aim !== null; }
+
   private releaseAll(): void {
     this.keys.clear();
+    this.aimHeld.clear();
+    this.aimKeys.clear();
     this.charge = null;
     this.armed = null;
     this.passHeld = -1;
@@ -156,6 +238,7 @@ export class Controls {
 
   /** Cancel an in-progress charge (pause, replay, finish). */
   cancel(): void {
+    if (this.aim) this.closeAim(false);
     this.charge = null;
     this.armed = null;
     this.tackleQ = null;
@@ -168,9 +251,30 @@ export class Controls {
   private onKey(e: KeyboardEvent, down: boolean): void {
     if (isTyping(e.target)) return;
     const code = e.code;
-    if (!GAME_KEYS.has(code)) return;
-    if (!this.opts.enabled()) { if (!down) this.keys.delete(code); return; }
+    if (!GAME_KEYS.has(code) && !(this.aim && AIM_KEYS.has(code))) {
+      if (!down) { this.aimKeys.delete(code); this.aimHeld.delete(code); }
+      return;
+    }
+    if (!this.opts.enabled()) { if (!down) { this.keys.delete(code); this.aimKeys.delete(code); this.aimHeld.delete(code); } return; }
     if (code === 'Space' || code.startsWith('Arrow')) e.preventDefault();
+    if (this.aim) {
+      // the game is stopped: keys set the kick
+      e.preventDefault();
+      if (down) {
+        audio.unlock();
+        this.acted = this.clock;
+        if (e.repeat) return;
+        this.keys.add(code);
+        if (code === 'Space' || code === 'Enter' || code === 'NumpadEnter' || code === 'KeyF') this.aimConfirm();
+        else if (code === 'Escape') this.aimAbort();
+        else if (code === 'KeyZ') this.aim.cycleLoft(1);
+      } else {
+        this.keys.delete(code);
+        this.aimHeld.delete(code);
+        this.aimKeys.delete(code);
+      }
+      return;
+    }
     if (down) {
       audio.unlock();
       if (e.repeat) return;
@@ -182,6 +286,8 @@ export class Controls {
       else if (code === 'KeyC') this.call(false, 'KeyC');
     } else {
       this.keys.delete(code);
+      this.aimKeys.delete(code);
+      this.aimHeld.delete(code);
       if (code === 'Space' && this.charge?.src === 'key') this.release();
       if (code === 'KeyF') this.passHeld = -1;
       if (this.armed?.hold === code) this.armed.until = Math.min(this.armed.until, this.clock + 0.2);
@@ -203,6 +309,11 @@ export class Controls {
   action(kind: 'shoot' | 'pass' | 'through', src: Src, code: string): void {
     const dbl = this.doubleTap(code);
     if (this.state.phase === 'intro' && !this.hasBall()) return;
+    if (this.calm && (this.hasBall() || this.canKick())) {
+      // calm: stop the game and set the kick
+      this.openAim(kind, src);
+      return;
+    }
     if (this.hasBall()) {
       if (kind === 'shoot') this.startCharge(src);
       else this.pass(kind === 'through', src);
@@ -235,6 +346,114 @@ export class Controls {
     }
     // a team-mate has it (or is about to): ask for it
     if (!owner || owner.side === 'us') this.send({ kind: 'callForBall', through: kind === 'through' || dbl });
+  }
+
+  // ───────────────────────── calm aim ─────────────────────────
+
+  /** Stop the game and open the aim, seeded with a sensible kick (shot at goal / pass). */
+  private openAim(kind: 'shoot' | 'pass' | 'through', src: Src): boolean {
+    if (this.aim) return true;
+    if (!this.canKick()) return false;
+    this.send({ kind: 'aimStart', freeze: true });
+    if (this.engine.frozenForAim === false) return false;
+    const e = this.engine;
+    const info = assistInfo(e, this.offset);
+    const dir = this.worldDir();
+    let seed: KickParams | null = null;
+    let intent: 'shot' | 'pass' | 'setPiece' = 'pass';
+    try {
+      if (info.setPiece === 'corner') {
+        intent = 'setPiece';
+        const b = this.state.ball.pos;
+        const spot = { x: 52.5 - 9, y: 0 };
+        seed = assistPass(e, { pref: { x: spot.x - b.x, y: spot.y - b.y }, toward: spot });
+        if (seed && seed.loft < 0.25) seed = null;
+        if (!seed) {
+          const l = Math.hypot(spot.x - b.x, spot.y - b.y) || 1;
+          seed = { dir: { x: (spot.x - b.x) / l, y: (spot.y - b.y) / l }, power: 0.62, loft: 0.6, curl: 0 };
+        }
+      } else if (info.setPiece) {
+        intent = 'setPiece';
+        seed = assistShotDir(e, { charge: info.setPiece === 'penalty' ? 0.7 : 0.72, curl: 0, dir: null, offset: this.offset });
+      } else {
+        const shotLook = kind === 'shoot' && !!info.target && (info.dist < 20 || goalBound(e, kickDir(e, dir)));
+        if (shotLook) {
+          intent = 'shot';
+          seed = assistShotDir(e, { charge: 0.75, curl: 0, dir, offset: 0 });
+        } else {
+          seed = assistPass(e, { pref: dir ?? kickDir(e, null), through: kind === 'through', cone: kind === 'through' ? undefined : PASS_CONE })
+            ?? assistPass(e, { pref: dir ?? kickDir(e, null) });
+          if (!seed && kind === 'shoot' && info.target) { intent = 'shot'; seed = assistShotDir(e, { charge: 0.75, curl: 0, dir, offset: 0 }); }
+        }
+      }
+    } catch { seed = null; }
+    if (!seed) seed = { dir: kickDir(e, dir), power: 0.5, loft: 0, curl: 0 };
+    this.aim = new CalmAim(e, seed, intent);
+    this.aim.src = src;
+    this.aimHeld = new Set(this.keys);
+    this.aimKeys.clear();
+    this.charge = null;
+    this.armed = null;
+    this.rotHold = 0;
+    this.acted = this.clock;
+    audio.play('kick_soft', 0.12);
+    return true;
+  }
+
+  /** Close the aim: kick (true) or resume without kicking. */
+  private closeAim(kick: boolean): void {
+    const a = this.aim;
+    if (!a) return;
+    const params = kick ? a.params() : null;
+    this.aim = null;
+    this.aimPointer = null;
+    if (params) this.send({ kind: 'kick', params });
+    else this.send({ kind: 'aimCancel' });
+    // keys pressed while aiming are not movement until released; the run resumes from the keys held
+    for (const c of this.keys) if (!this.aimHeld.has(c)) this.aimKeys.add(c);
+    this.aimHeld.clear();
+    this.forceDir = true;
+    this.acted = this.clock;
+  }
+
+  /** Kick the aimed ball (SPACE / Enter / 'Vur'). */
+  aimConfirm(): void { if (this.aim) this.closeAim(true); }
+  /** Resume without kicking (Esc / 'İptal'). */
+  aimAbort(): void { if (this.aim) this.closeAim(false); }
+  /** Loft toggle (0 = Yerden, 1 = Yarım, 2 = Havadan). */
+  aimSetLoft(i: number): void { this.aim?.setLoft(i); }
+
+  private onWheel(e: WheelEvent): void {
+    if (!this.aim) return;
+    e.preventDefault();
+    this.wheelAcc += e.deltaY;
+    if (Math.abs(this.wheelAcc) < 60 || this.clock - this.wheelT < 0.18) return;
+    this.aim.cycleLoft(this.wheelAcc < 0 ? 1 : -1);
+    this.wheelAcc = 0;
+    this.wheelT = this.clock;
+  }
+
+  /** Per-frame key adjustments while aiming (real dt: the game itself is stopped). */
+  private updateAim(dt: number): void {
+    const a = this.aim;
+    if (!a) return;
+    // the engine dropped the freeze (moment over, skipped …): close
+    if (this.engine.frozenForAim === false) { this.aim = null; this.aimPointer = null; this.aimHeld.clear(); this.forceDir = true; return; }
+    if (a.drawing) return;
+    const k = (c: string) => this.keys.has(c) && !this.aimHeld.has(c);
+    const rot = (k('KeyD') || k('ArrowRight') ? 1 : 0) - (k('KeyA') || k('ArrowLeft') ? 1 : 0);
+    if (rot) {
+      this.rotHold += dt;
+      const ax = this.opts.axes?.();
+      // screen orientation of the pitch frame (+1 unless mirrored)
+      const o = ax ? Math.sign(ax.right.x * ax.up.y - ax.right.y * ax.up.x) || 1 : 1;
+      const rate = 0.45 + Math.min(1.35, this.rotHold * 1.5);
+      a.rotate(-rot * o * rate * dt);
+    } else this.rotHold = 0;
+    const pw = (k('KeyW') || k('ArrowUp') ? 1 : 0) - (k('KeyS') || k('ArrowDown') ? 1 : 0);
+    if (pw) a.addPower(pw * 0.55 * dt);
+    const cu = (k('KeyQ') ? 1 : 0) - (k('KeyE') ? 1 : 0);
+    if (cu) a.addCurl(cu * 1.4 * dt);
   }
 
   private doTackle(): void {
@@ -304,7 +523,9 @@ export class Controls {
 
   /** Keys / stick as a screen direction (x = right, y = up), length ≤ 1. */
   private screenDir(): Vec2 | null {
-    const k = this.keys;
+    const ks = this.keys;
+    const skip = this.aimKeys;
+    const k = { has: (c: string) => ks.has(c) && !skip.has(c) };
     let x = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
     let y = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
     if (!x && !y && (this.touchDir.x || this.touchDir.y)) { x = this.touchDir.x; y = this.touchDir.y; }
@@ -329,6 +550,12 @@ export class Controls {
   }
 
   private onPointerMove(e: PointerEvent): void {
+    if (this.aim?.drawing && e.pointerId === this.aimPointer) {
+      const p = this.local(e);
+      const w = this.opts.toWorld(p.x, p.y);
+      if (w) this.aim.extend(w);
+      return;
+    }
     if (e.pointerType === 'touch') return;
     const p = this.local(e);
     if (Math.hypot(p.x - this.mouse.sx, p.y - this.mouse.sy) > 2) this.mouse.moved = this.clock;
@@ -338,10 +565,43 @@ export class Controls {
     this.mouse.inside = true;
   }
 
+  /** Calm: start drawing the kick at this pointer (the stroke runs from the ball). */
+  private beginDraw(e: PointerEvent, src: AimSrc): boolean {
+    const a = this.aim;
+    if (!a || this.aimPointer !== null) return false;
+    const p = this.local(e);
+    const w = this.opts.toWorld(p.x, p.y);
+    if (!w) return false;
+    e.preventDefault();
+    this.aimPointer = e.pointerId;
+    try { this.surface.setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+    a.begin(w, src);
+    this.acted = this.clock;
+    return true;
+  }
+
   private onPointerDown(e: PointerEvent): void {
+    const onSurface = e.target === this.surface || e.target instanceof HTMLCanvasElement;
+    if (this.aim && onSurface && this.opts.enabled() && (e.pointerType === 'touch' || e.button === 0)) {
+      audio.unlock();
+      if (e.pointerType === 'touch') this.touchMode = true;
+      this.beginDraw(e, e.pointerType === 'touch' ? 'touch' : 'mouse');
+      return;
+    }
     if (e.pointerType === 'touch') { this.touchMode = true; return; }
-    if (e.target !== this.surface && !(e.target instanceof HTMLCanvasElement)) return;
+    if (!onSurface) return;
     if (!this.opts.enabled()) return;
+    // calm: press near the ball you can kick = stop the game and draw in one go
+    if (this.calm && e.button === 0 && !this.opts.mouseAim && (this.hasBall() || this.canKick())) {
+      const lp = this.local(e);
+      const w = this.opts.toWorld(lp.x, lp.y);
+      const b = this.state.ball.pos;
+      if (w && Math.hypot(w.x - b.x, w.y - b.y) < 2.6 && this.openAim('shoot', 'mouse')) {
+        audio.unlock();
+        this.beginDraw(e, 'mouse');
+        return;
+      }
+    }
     audio.unlock();
     try { (document.activeElement as HTMLElement | null)?.blur?.(); } catch { /* ignore */ }
     this.onPointerMove(e);
@@ -367,6 +627,13 @@ export class Controls {
   }
 
   private onPointerUp(e: PointerEvent): void {
+    if (this.aim && e.pointerId === this.aimPointer) {
+      this.aimPointer = null;
+      const drawn = this.aim.end();
+      // mouse: releasing a real drawing kicks; touch: confirm with the 'Vur' button
+      if (drawn && e.pointerType !== 'touch') this.closeAim(true);
+      return;
+    }
     if (e.pointerType === 'touch') return;
     if (e.button === 0) {
       this.dragMove = false;
@@ -387,6 +654,7 @@ export class Controls {
     if (!this.opts.enabled()) return;
     audio.unlock();
     const code = `T-${kind}`;
+    if (down && this.aim) { this.aimConfirm(); return; }
     if (down) {
       this.keys.add(code);
       this.acted = this.clock;
@@ -408,7 +676,17 @@ export class Controls {
       if (this.lastDir.x || this.lastDir.y) { this.send({ kind: 'moveDir', dir: { x: 0, y: 0 } }); this.lastDir = { x: 0, y: 0 }; }
       return;
     }
+    if (this.aim) {
+      // the game is stopped: only the aim changes
+      this.updateAim(dt);
+      if (this.aim) return;
+    }
     const info = assistInfo(this.engine, this.offset);
+    // calm set pieces start straight in the (frozen) aim
+    if (this.calm && info.setPiece && !this.setPieceAimed && this.canKick()) {
+      this.setPieceAimed = true;
+      if (this.openAim('shoot', this.touchMode ? 'touch' : 'key')) return;
+    }
     const k = this.keys;
     const dir = this.worldDir();
 
@@ -427,8 +705,9 @@ export class Controls {
     // movement (no keys: the engine runs the user onto passes meant for him)
     const d = dir ?? { x: 0, y: 0 };
     if (dir || !this.dragMove) {
-      if (Math.abs(d.x - this.lastDir.x) > 1e-3 || Math.abs(d.y - this.lastDir.y) > 1e-3) {
-        if (dir || this.lastDir.x || this.lastDir.y) this.send({ kind: 'moveDir', dir: d });
+      if (this.forceDir || Math.abs(d.x - this.lastDir.x) > 1e-3 || Math.abs(d.y - this.lastDir.y) > 1e-3) {
+        if (this.forceDir || dir || this.lastDir.x || this.lastDir.y) this.send({ kind: 'moveDir', dir: d });
+        this.forceDir = false;
         this.lastDir = { ...d };
         if (dir) this.dragMove = false;
       }
@@ -490,7 +769,11 @@ export class Controls {
         // (an arriving ball: the engine buffers the strike for the moment it is in reach)
         const kind = this.armed.kind;
         this.armed = null;
-        if (kind === 'shot') this.fireShot(0.75, 0, this.mouseActive() ? this.mouse.world : null);
+        if (this.calm) {
+          // calm: stop the game the moment the ball is playable
+          if (this.canKick()) this.openAim(kind === 'shot' ? 'shoot' : 'pass', 'key');
+          else this.armed = { kind, until: this.clock + 0.4, hold: null };
+        } else if (kind === 'shot') this.fireShot(0.75, 0, this.mouseActive() ? this.mouse.world : null);
         else this.pass(false, 'key');
       } else if (this.state.ball.ownerId && this.state.ball.ownerId !== this.userId) this.armed = null;
     }
@@ -529,13 +812,26 @@ export class Controls {
       mode,
       aimPoint: this.mouseActive() ? this.mouse.world : null,
       touch: this.touchMode,
+      calm: this.calmOverlay(),
+    };
+  }
+
+  private calmOverlay(): CalmOverlay | null {
+    const a = this.aim;
+    if (!a) return null;
+    const an = a.analysis();
+    return {
+      analysis: an, version: a.version,
+      power: an.params.power, curl: an.params.curl, loftIdx: a.loftIdx,
+      stroke: a.stroke, drawing: a.drawing, src: a.src, intent: a.intent,
     };
   }
 
   setChipHeld(v: boolean): void { this.chipHeld = v; }
 
   hint(mode: ControlsMode): string {
-    if (this.touchMode) return t('v2d.hint.touch');
-    return t(`v2d.hint.${mode}`);
+    const ns = this.calm ? 'v2d.chint' : 'v2d.hint';
+    if (this.touchMode) return t(`${ns}.touch`);
+    return t(`${ns}.${mode}`);
   }
 }

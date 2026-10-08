@@ -7,7 +7,7 @@
  * run, SPACE = shot where you run, F = pass / call for the ball, R through ball, Q/E curl,
  * touch joystick + ŞUT / PAS). No slow motion. V cycles the camera, H shows the controls.
  */
-import type { CameraMode, Kit, MomentEvent, MomentSetup, ReplayFrame } from '../../core/types';
+import type { CameraMode, Kit, MomentEvent, MomentSetup, ReplayFrame, Vec3 } from '../../core/types';
 import type { MomentEngine } from '../engine/api';
 import { mountMomentViewImpl } from './view';
 import { mountStadiumBackdropImpl } from './backdrop';
@@ -34,6 +34,8 @@ export interface MomentViewHandle {
   pause(paused: boolean): void;
   /** Play recorded frames (slow-motion, cinematic camera); onDone when finished or skipped. */
   playReplay(frames: ReplayFrame[], onDone: () => void): void;
+  /** Pitch point → container CSS px (null when off screen). For tests / debugging tools. */
+  project?(p: Vec3): { x: number; y: number } | null;
 }
 
 export function mountMomentView(container: HTMLElement, engine: MomentEngine, setup: MomentSetup, opts: MomentViewOptions): MomentViewHandle {

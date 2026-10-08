@@ -55,6 +55,11 @@ export interface MomentEngine {
    * rendered positions by it (pos + vel·lag) so motion stays smooth between fixed steps.
    */
   readonly lag?: number;
+  /**
+   * Calm controls: true while the simulation is stopped for the user's aim (aimStart with
+   * freeze, until kick / aimCancel). Nothing moves and no clock runs meanwhile.
+   */
+  readonly frozenForAim?: boolean;
   /** Is the user currently able to kick (has the ball, or ball is within reach for a one-touch volley/header)? */
   canKick(): boolean;
   /** Subscribe to events (audio, commentary, camera). Returns unsubscribe. */

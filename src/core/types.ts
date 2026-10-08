@@ -616,6 +616,8 @@ export interface Settings {
   matchSpeed: number;         // ticker speed multiplier 0.5..4
   /** Real-time match view: '3d' (default) or '2d' top-down (simple / low-spec). */
   matchView?: '2d' | '3d';
+  /** Match controls: 'calm' = the game stops while you draw the shot / pass (default), 'fast' = real-time. */
+  controlMode?: 'calm' | 'fast';
   /** Settings migration version (see core/settings.ts). */
   version?: number;
 }
@@ -797,7 +799,7 @@ export type ControlCommand =
   | { kind: 'move'; target: Vec2 | null }          // run toward a point (null = stop)
   | { kind: 'moveDir'; dir: Vec2 }                  // keyboard direction; zero vector = stop
   | { kind: 'sprint'; on: boolean }
-  | { kind: 'aimStart' }                            // user started a kick gesture (engine may slow time)
+  | { kind: 'aimStart'; freeze?: boolean }          // user started a kick gesture (engine may slow time; freeze = stop time completely until kick / aimCancel)
   | { kind: 'aimCancel' }
   | { kind: 'kick'; params: KickParams }
   | { kind: 'aftertouch'; spin: number }            // -1..1 extra curl shortly after the kick

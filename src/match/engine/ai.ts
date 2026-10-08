@@ -58,6 +58,14 @@ export function aiUpdate(e: Engine): void {
     // the user is his side's chaser when he is clearly first: AI teammates leave it to him
     const u = e.user;
     if (u.eit < best.us - 0.15 && u.eit < 2.5) chaser.us = null;
+    // Casual assist: on easy/normal an opponent only goes for the user's pass when he would
+    // clearly beat the intended receiver to it, so sensible passes are rarely cut out.
+    const them = chaser.them;
+    if (them && k && !k.isShot && !k.completed && k.side === 'us' && e.agents[k.by]?.isUser && e.ease > 0 && s.time - k.t < 4) {
+      const recv = k.target >= 0 ? e.agents[k.target] : null;
+      const recvT = recv ? recv.eit : best.us;
+      if (Number.isFinite(recvT) && them.eit > recvT - 0.8 * e.ease) chaser.them = null;
+    }
   }
   const passIn = loose && k && !k.isShot && !k.completed && k.target >= 0 && s.time - k.t < 4 ? k : null;
   const pressers = loose ? null : assignPressers(e);
@@ -423,9 +431,9 @@ export function carrierThink(e: Engine, a: Agent): void {
   const vision = clamp(a.a.vision, 1, 99) / 99;
 
   // casual play: the user called for it → give it to him at once unless the lane is shut
-  if (a.side === e.user.side && s.time < e.ctl.callUntil && e.ease > 0.15 && !e.user.passive && e.user.stun <= 0) {
+  if (a.side === e.user.side && s.time < e.ctl.callUntil && !e.user.passive && e.user.stun <= 0) {
     const opt = passOptions(e, a).find((o) => o.to.isUser);
-    const maxRisk = 1.4 + 1.2 * e.ease;
+    const maxRisk = 0.9 + 1.7 * e.ease;
     if (opt && !opt.offside && (opt.lofted || opt.risk < maxRisk)) {
       e.execKick(a, passParams(e, a, opt), { target: opt.to.i, isShot: false });
       return;

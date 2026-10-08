@@ -40,6 +40,8 @@ export interface UserCtl {
   callUntil: number;
   callThrough: boolean;
   tackle: { slide: boolean } | null;
+  /** Calm controls: time is stopped completely while the user aims (no clock, no focus drain). */
+  freeze: boolean;
 }
 
 /** Reach rules for a user/AI strike at the loose ball. */
@@ -68,7 +70,7 @@ export class Engine {
   log: UserLog = newUserLog();
   ctl: UserCtl = {
     target: null, dir: null, sprint: false, aiming: false, pending: null, atUntil: -1, atSpin: 0, callUntil: -1,
-    callThrough: false, tackle: null,
+    callThrough: false, tackle: null, freeze: false,
   };
   script: MomentScript = { actions: [] };
   /** Set piece: everyone waits for the user's kick. */
@@ -106,6 +108,8 @@ export class Engine {
   private acc = 0;
   /** Simulated seconds not yet stepped (0..DT): views extrapolate positions by it for smooth motion. */
   get lag(): number { return this.acc; }
+  /** Calm controls: the simulation is stopped while the user draws his kick. */
+  get frozenForAim(): boolean { return this.ctl.aiming && this.ctl.freeze; }
   private replayBuf: ReplayFrame[] = [];
   private replayHead = 0;
   private lastBounceT = -1;
@@ -202,6 +206,8 @@ export class Engine {
     const s = this.state;
     if (s.phase === 'ended') return;
     const real = Number.isFinite(dt) ? clamp(dt, 0, 0.1) : 0;
+    // calm controls: nothing moves (and no clock runs) while the user aims
+    if (this.ctl.aiming && this.ctl.freeze) return;
     // slow-motion focus is a real-time budget
     if (this.ctl.aiming && !this.frozen && s.timeScale < 1) {
       s.focus = Math.max(0, s.focus - real / this.focusBudget);
@@ -242,9 +248,15 @@ export class Engine {
         c.sprint = !!cmd.on;
         break;
       case 'aimStart':
+        if (cmd.freeze) {
+          // stop the world (only when the user can strike the ball right now)
+          if (!this.canKick()) break;
+          c.freeze = true;
+          s.timeScale = 0;
+        }
         if (!c.aiming) {
           c.aiming = true;
-          if (!this.frozen && s.focus > 0.02) s.timeScale = AIM_TIMESCALE;
+          if (!c.freeze && !this.frozen && s.focus > 0.02) s.timeScale = AIM_TIMESCALE;
           if (s.phase === 'live' || s.phase === 'flight') s.phase = 'aiming';
           this.emit({ t: 'aim', on: true });
         }
@@ -547,6 +559,7 @@ export class Engine {
       if (this.attackSide === 'them' && (p.power > 0.55 || p.loft > 0.3)) L.cleared = true;
     }
     if (s.phase !== 'outcome') s.phase = 'flight';
+    this.ctl.freeze = false;
     if (this.ctl.aiming) {
       this.ctl.aiming = false;
       this.emit({ t: 'aim', on: false });
@@ -557,6 +570,7 @@ export class Engine {
 
   private stopAiming(): void {
     const s = this.state;
+    this.ctl.freeze = false;
     if (this.ctl.aiming) {
       this.ctl.aiming = false;
       this.emit({ t: 'aim', on: false });
@@ -586,6 +600,8 @@ export class Engine {
       return;
     }
     this.skipped = true;
+    this.ctl.freeze = false;
+    this.ctl.aiming = false;
     const r = buildResult(this, true);
     this.skipResult = r;
     s.outcome = r.outcome;
@@ -933,7 +949,15 @@ export class Engine {
       if (this.owner === a) vmax *= 0.83 + 0.13 * (a.a.dribbling / 99);
       let dvx = 0;
       let dvy = 0;
-      if (d > 0.08) {
+      // AI hysteresis: once a player has arrived he stands until his (re-planned) spot drifts away,
+      // instead of shuffling back and forth around it every re-plan
+      let go = d > 0.08;
+      if (!a.isUser && a.urgency < 0.95) {
+        if (a.settled) go = d > 0.9;
+        a.settled = !go || d < 0.35;
+        if (a.settled && d < 0.35) go = false;
+      } else a.settled = false;
+      if (go) {
         const sp = Math.min(vmax, Math.sqrt(2 * 5 * Math.max(0, d - 0.05)));
         dvx = (tx / d) * sp;
         dvy = (ty / d) * sp;
@@ -966,7 +990,9 @@ export class Engine {
       st.pos.y = clamp(st.pos.y + st.vel.y * DT, -HW - 4, HW + 4);
       const sp = hyp(st.vel.x, st.vel.y);
       if (sp > 0.35 && !(a.isGK && sp < 5)) {
-        st.facing = Math.atan2(st.vel.y, st.vel.x);
+        // turn with a max rate (no one-frame flips when the velocity swings at low speed)
+        const rate = a.isUser ? 16 : sp > 2.5 ? 10 : 5;
+        st.facing = turnToward(st.facing, Math.atan2(st.vel.y, st.vel.x), rate * DT);
       } else if (this.owner !== a) {
         // idle players watch the ball
         const b = this.state.ball.pos;
@@ -1049,11 +1075,13 @@ export class Engine {
     }
     const fx = Math.cos(st.facing);
     const fy = Math.sin(st.facing);
-    const push = 0.1 + 0.11 * sp;
-    const lead = 0.36 + push * (1 - a.touch);
+    // soft touches: after each touch the ball rolls a little ahead and the runner catches it up
+    // (continuous offset, no dart forward at the touch)
+    const push = 0.05 + 0.05 * sp;
+    const lead = 0.38 + push * Math.sin(Math.PI * clamp(a.touch, 0, 1));
     const tx = st.pos.x + fx * lead;
     const ty = st.pos.y + fy * lead;
-    const k = 1 - Math.exp(-22 * DT);
+    const k = 1 - Math.exp(-16 * DT);
     const nx = b.pos.x + (tx - b.pos.x) * k;
     const ny = b.pos.y + (ty - b.pos.y) * k;
     b.vel.x = (nx - b.pos.x) / DT;
@@ -1250,6 +1278,7 @@ export class Engine {
     s.outcome = outcome;
     s.phase = 'outcome';
     s.timeScale = 1;
+    this.ctl.freeze = false;
     if (this.ctl.aiming) { this.ctl.aiming = false; this.emit({ t: 'aim', on: false }); }
     s.banner = banner ?? bannerFor(this, outcome);
     // short follow-through so the match flows (goal: the ball in the net + a beat)
@@ -1296,11 +1325,13 @@ export class Engine {
         this.finish(classify(this, 'keeper'), 1.4);
         return;
       }
-      // our attack fizzles: the user passed and no longer involved
+      // our attack fizzles: the user passed and is no longer involved. Play goes on while we keep
+      // the ball (pass, run, call for it again …); only a long spell without the user ends it.
       if (this.attackSide === 'us' && o.side === 'us' && !o.isUser && this.log.passesCompleted > 0) {
         const since = s.time - this.log.lastTouchT;
-        // play goes on while we keep the ball (the user can call for it again)
-        if (since > 8) { this.finish(classify(this, 'stale'), 1.0); return; }
+        const calling = s.time < this.ctl.callUntil + 1.5;
+        const near = hyp(o.st.pos.x - this.user.st.pos.x, o.st.pos.y - this.user.st.pos.y) < 22;
+        if (since > 22 || (since > 14 && !calling && !near)) { this.finish(classify(this, 'stale'), 1.0); return; }
       }
     } else {
       // loose ball that has stopped dead with nobody near (rare)
@@ -1318,7 +1349,9 @@ export class Engine {
 
   /** Seconds of play before the moment auto-ends (longer on easier settings). */
   timeLimitSec(): number {
-    return (this.setup.timeLimit > 0 ? this.setup.timeLimit : 15) * (1 + 0.55 * this.ease);
+    const base = (this.setup.timeLimit > 0 ? this.setup.timeLimit : 15) * (1 + 0.55 * this.ease);
+    // continuous play: an open-play attack keeps going while we have the ball (generous limit)
+    return this.attackSide === 'us' && !this.setPiece && !this.drill ? base * 1.45 : base;
   }
 
   private farT = 0;

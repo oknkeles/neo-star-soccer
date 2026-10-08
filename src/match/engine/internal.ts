@@ -101,6 +101,8 @@ export interface Agent {
   wall: boolean;
   /** Drill mannequin / inactive player (never moves). */
   passive: boolean;
+  /** Steering hysteresis: arrived at a (slowly moving) target; restarts only when it drifts away. */
+  settled?: boolean;
 }
 
 export interface KickRec {

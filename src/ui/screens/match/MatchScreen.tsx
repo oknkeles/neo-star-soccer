@@ -266,7 +266,8 @@ export default function MatchScreen({ params }: { params: Record<string, string>
   }
 
   const scoreLine = `${ctx.home.shortName} ${live.homeGoals}-${live.awayGoals} ${ctx.away.shortName}`;
-  const showStage = !!pending && (phase === 'moment' || (phase === 'result' && !!outcome?.stage));
+  // the stage is built (held) under the intro card already: no hitch when the moment starts
+  const showStage = !!pending && (phase === 'intro' || phase === 'moment' || (phase === 'result' && !!outcome?.stage));
 
   return (
     <>
@@ -318,6 +319,7 @@ export default function MatchScreen({ params }: { params: Record<string, string>
         <MomentStage
           setup={pending.setup}
           apiRef={stageApi}
+          hold={phase === 'intro'}
           onResult={(r) => finishMoment(r, true)}
           onFail={onStageFail}
         >

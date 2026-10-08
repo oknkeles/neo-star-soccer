@@ -7,7 +7,7 @@
  */
 import { t } from '../../core/i18n';
 import type { CameraMode } from '../../core/types';
-import { CONTROL_ROWS } from '../controls/controls';
+import { controlMode, controlRows, keyLabel } from '../controls/controls';
 import './strings';
 import '../view2d/strings';
 
@@ -20,10 +20,15 @@ export interface HudCallbacks {
 export type BannerTone = 'goal' | 'good' | 'neutral' | 'bad';
 export type HudContext = 'attack' | 'support' | 'defend' | 'none';
 
+/** A label over a player while the calm aim is open (receiver / likely interceptor). */
+export interface AimMark { x: number; y: number; kind: 'pass' | 'danger'; label: string }
+
 /** What the overlay canvas shows this frame (CSS px, container-relative). */
 export interface HudFrame {
   charge: { x: number; y: number; value: number; curl: number; chip: boolean } | null;
   pass: { x: number; y: number; label: string } | null;
+  /** Calm aim: the drawn stroke (screen points, from the ball) and player marks. */
+  aim?: { stroke: { x: number; y: number }[] | null; marks: AimMark[] } | null;
 }
 
 export interface Hud {
@@ -37,6 +42,8 @@ export interface Hud {
   setTime(fraction: number | null): void;
   setReplay(on: boolean): void;
   setControlsVisible(v: boolean): void;
+  /** Calm aim open: hide the controls layer (touch stick / buttons) and the hint. */
+  setAiming(on: boolean): void;
   showHelp(touch?: boolean): void;
   readonly helpOpen: boolean;
   frame(f: HudFrame): void;
@@ -184,9 +191,60 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
 
   // ── overlay canvas: power ring + pass badge ──
   let drawn = false;
+  const drawAim = (a: NonNullable<HudFrame['aim']>) => {
+    if (!g) return;
+    const st = a.stroke;
+    if (st && st.length > 1) {
+      g.lineCap = 'round';
+      g.lineJoin = 'round';
+      g.setLineDash([]);
+      g.strokeStyle = 'rgba(0,0,0,0.45)';
+      g.lineWidth = 6;
+      g.beginPath();
+      g.moveTo(st[0].x, st[0].y);
+      for (let i = 1; i < st.length; i++) g.lineTo(st[i].x, st[i].y);
+      g.stroke();
+      g.strokeStyle = 'rgba(255,255,255,0.92)';
+      g.lineWidth = 2.5;
+      g.setLineDash([7, 6]);
+      g.stroke();
+      g.setLineDash([]);
+      const e = st[st.length - 1];
+      g.fillStyle = '#fff';
+      g.beginPath();
+      g.arc(e.x, e.y, 4.5, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.font = '800 12px Inter, system-ui, sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    for (const m of a.marks) {
+      const col = m.kind === 'pass' ? ACCENT : DANGER;
+      const w = Math.max(24, g.measureText(m.label).width + 16);
+      const y = m.y - 14;
+      g.fillStyle = m.kind === 'pass' ? 'rgba(4,10,7,0.85)' : 'rgba(120,10,24,0.88)';
+      g.strokeStyle = col;
+      g.lineWidth = 2;
+      g.beginPath();
+      g.roundRect?.(m.x - w / 2, y - 11, w, 22, 11);
+      if (!g.roundRect) g.rect(m.x - w / 2, y - 11, w, 22);
+      g.fill();
+      g.stroke();
+      g.fillStyle = m.kind === 'pass' ? ACCENT : '#fff';
+      g.fillText(m.label, m.x, y + 0.5);
+      g.fillStyle = col;
+      g.beginPath();
+      g.moveTo(m.x - 5, y + 11);
+      g.lineTo(m.x + 5, y + 11);
+      g.lineTo(m.x, y + 17);
+      g.closePath();
+      g.fill();
+    }
+  };
+
   const drawFrame = (f: HudFrame) => {
     if (!g) return;
-    if (!f.charge && !f.pass) {
+    if (!f.charge && !f.pass && !f.aim) {
       if (drawn) { g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, canvas.width, canvas.height); drawn = false; }
       return;
     }
@@ -214,6 +272,7 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
       g.closePath();
       g.fill();
     }
+    if (f.aim) drawAim(f.aim);
     if (f.charge) {
       const { x, y, value, curl, chip } = f.charge;
       const r = 26;
@@ -241,6 +300,11 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
 
   let bannerOn = false;
   let hintText = '';
+  let hintOn = false;
+  let timeW = '';
+  let timeLow = false;
+  let timeShown = true;
+  let aimingOn = false;
   const hud: Hud = {
     root,
     controlsLayer: controls,
@@ -263,7 +327,8 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
     },
     setHint(text) {
       if (text && text !== hintText) { hintText = text; hint.textContent = text; }
-      hint.classList.toggle('on', !!text);
+      const on = !!text && !aimingOn;
+      if (on !== hintOn) { hintOn = on; hint.classList.toggle('on', on); }
     },
     setCamera(mode) {
       camBtn.title = `${t('view.hud.camera')}: ${t(`view.cam.${mode}`)} (V)`;
@@ -275,10 +340,13 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
       windText.textContent = `${t('view.hud.wind')} ${t('view.hud.windUnit', { v: speed.toFixed(1) })}`;
     },
     setTime(f) {
-      if (f === null) { time.style.display = 'none'; return; }
-      time.style.display = 'block';
-      time.style.width = `${(Math.max(0, Math.min(1, f)) * 100).toFixed(1)}%`;
-      time.classList.toggle('low', f < 0.2);
+      // (called every frame: touch the DOM only when something visible changed)
+      if (f === null) { if (timeShown) { timeShown = false; time.style.display = 'none'; } return; }
+      if (!timeShown) { timeShown = true; time.style.display = 'block'; }
+      const w = `${(Math.max(0, Math.min(1, f)) * 100).toFixed(1)}%`;
+      if (w !== timeW) { timeW = w; time.style.width = w; }
+      const low = f < 0.2;
+      if (low !== timeLow) { timeLow = low; time.classList.toggle('low', low); }
     },
     setReplay(on) {
       replay.classList.toggle('on', on);
@@ -290,7 +358,13 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
     },
     setControlsVisible(v) {
       controls.classList.toggle('off', !v);
-      if (!v) { hint.classList.remove('on'); drawFrame({ charge: null, pass: null }); }
+      if (!v) { hint.classList.remove('on'); hintOn = false; drawFrame({ charge: null, pass: null }); }
+    },
+    setAiming(on) {
+      if (on === aimingOn) return;
+      aimingOn = on;
+      controls.classList.toggle('off', on);
+      if (on) { hint.classList.remove('on'); hintOn = false; }
     },
     showHelp(touch = false) {
       if (help) return;
@@ -298,17 +372,18 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
       help = h;
       const card = el('div', 'nssv-help-card', h);
       el('h2', '', card, t('v2d.help.title'));
-      el('p', 'sub', card, t('v2d.help.sub'));
+      const calm = controlMode() === 'calm';
+      el('p', 'sub', card, t(calm ? 'v2d.help.subCalm' : 'v2d.help.sub'));
       const ul = el('ul', '', card);
       const row = (k: string, v: string) => {
         const li = el('li', '', ul);
         el('span', '', el('kbd', '', li)).textContent = k;
         el('span', '', li).textContent = v;
       };
-      if (touch) row('◎', t('v2d.hint.touch'));
+      if (touch) row('◎', t(calm ? 'v2d.chint.touch' : 'v2d.hint.touch'));
       else {
-        for (const [k, v] of CONTROL_ROWS) row(k, t(v));
-        row(t('v2d.help.mouseKey'), t('v2d.help.mouse'));
+        for (const [k, v] of controlRows()) row(keyLabel(k), t(v));
+        if (!calm) row(t('v2d.help.mouseKey'), t('v2d.help.mouse'));
         row('V', t('view.help.camera'));
       }
       const go = el('button', '', card, t('v2d.help.go'));

@@ -8,18 +8,21 @@ import type { Vec3 } from '../../../core/types';
 
 export interface AimView {
   group: THREE.Group;
-  /** Pitch-frame path (already truncated to what the player can "see"); null hides it. */
-  setPath(path: readonly Vec3[] | null, power: number): void;
+  /**
+   * Pitch-frame path (already truncated to what the player can "see"); null hides it.
+   * `landing` (calm aim: the full path) puts the target ring there and fades the tube less.
+   */
+  setPath(path: readonly Vec3[] | null, power: number, landing?: Vec3 | null): void;
   update(time: number): void;
   dispose(): void;
 }
 
 const TUBE_FRAG = /* glsl */ `
-  uniform vec3 uColor; uniform float uTime; uniform float uOpacity;
+  uniform vec3 uColor; uniform float uTime; uniform float uOpacity; uniform float uFade;
   varying vec2 vUv;
   void main() {
     float along = vUv.x;
-    float fade = pow(1.0 - along, 0.7);
+    float fade = max(pow(1.0 - along, uFade), 0.12);
     float dash = 0.55 + 0.45 * smoothstep(0.2, 0.8, sin((along * 40.0 - uTime * 6.0)));
     float edge = 1.0 - abs(vUv.y - 0.5) * 1.2;
     gl_FragColor = vec4(uColor * (1.2 + 0.8 * dash), fade * dash * edge * uOpacity);
@@ -35,7 +38,7 @@ export function buildAim(): AimView {
   group.name = 'aim';
   const color = new THREE.Color('#b8ff3c');
   const tubeMat = new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: color.clone() }, uTime: { value: 0 }, uOpacity: { value: 1 } },
+    uniforms: { uColor: { value: color.clone() }, uTime: { value: 0 }, uOpacity: { value: 1 }, uFade: { value: 0.7 } },
     vertexShader: TUBE_VERT, fragmentShader: TUBE_FRAG,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
   });
@@ -70,7 +73,7 @@ export function buildAim(): AimView {
 
   const view: AimView = {
     group,
-    setPath(path, power) {
+    setPath(path, power, landing) {
       const show = !!path && path.length >= 2;
       tube.visible = show;
       shadow.visible = show;
@@ -87,8 +90,9 @@ export function buildAim(): AimView {
       tube.geometry = tubeGeo;
       shadowGeo.setFromPoints(clean.map((p) => new THREE.Vector3(p.x, 0.03, p.z)));
       shadow.computeLineDistances();
-      const end = clean[clean.length - 1];
+      const end = landing ? new THREE.Vector3(landing.x, Math.max(0.04, landing.z), -landing.y) : clean[clean.length - 1];
       target.position.set(end.x, Math.max(0.04, end.y), end.z);
+      tubeMat.uniforms.uFade.value = landing ? 0.3 : 0.7;
       powerColor(power, tubeMat.uniforms.uColor.value as THREE.Color);
       targetMat.color.copy(tubeMat.uniforms.uColor.value as THREE.Color);
     },

@@ -182,9 +182,9 @@ export default function DrillScreen({ params }: { params: Record<string, string>
       </motion.div>
       <Card title={t('match.drill.controls')} icon="gamepad" className="mt-6">
         <ul className="space-y-2.5 text-sm">
-          <li className="flex gap-2.5"><MousePointerClick size={18} className="text-accent shrink-0" />{t('v2d.drill.shoot')}</li>
+          <li className="flex gap-2.5"><MousePointerClick size={18} className="text-accent shrink-0" />{t(settings.controlMode === 'fast' ? 'v2d.drill.shoot' : 'v2d.cdrill.shoot')}</li>
           <li className="flex gap-2.5"><Footprints size={18} className="text-accent shrink-0" />{t('v2d.drill.move')}</li>
-          <li className="flex gap-2.5"><Hand size={18} className="text-accent shrink-0" />{t('v2d.drill.pass')}</li>
+          <li className="flex gap-2.5"><Hand size={18} className="text-accent shrink-0" />{t(settings.controlMode === 'fast' ? 'v2d.drill.pass' : 'v2d.cdrill.pass')}</li>
         </ul>
       </Card>
       <AnimatePresence>

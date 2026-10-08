@@ -6,7 +6,7 @@ import { useSettings } from '../../game/api';
 import { Card, ScreenHeader, Tabs } from '../components/kit';
 import { Segmented, SettingRow } from '../components/controls';
 import '../../match/view2d/strings';
-import { CONTROL_ROWS } from '../../match/controls/controls';
+import { controlRows, keyLabel } from '../../match/controls/controls';
 import AiSection from './shell/settings/AiSection';
 import { DisplaySoundSection, GeneralSection } from './shell/settings/GeneralSection';
 import SavesSection from './shell/settings/SavesSection';
@@ -56,6 +56,12 @@ function MatchSection() {
             value={s.matchView ?? '3d'} onChange={(v) => updateSettings((x) => { x.matchView = v as '2d' | '3d'; })}
           />
         </SettingRow>
+        <SettingRow title={t('v2d.set.mode')} desc={t('v2d.set.modeDesc')}>
+          <Segmented
+            options={[{ id: 'calm', label: t('v2d.set.calm') }, { id: 'fast', label: t('v2d.set.fast') }]}
+            value={s.controlMode ?? 'calm'} onChange={(v) => updateSettings((x) => { x.controlMode = v as 'calm' | 'fast'; })}
+          />
+        </SettingRow>
       </Card>
       <ControlsCard />
     </>
@@ -63,24 +69,29 @@ function MatchSection() {
 }
 
 function ControlsCard() {
+  const s = useSettings();
+  const mode = s.controlMode === 'fast' ? 'fast' : 'calm';
   return (
-    <Card title={t('v2d.set.controls')} icon="gamepad">
+    <Card title={`${t('v2d.set.controls')} · ${t(mode === 'calm' ? 'v2d.set.calm' : 'v2d.set.fast')}`} icon="gamepad">
+      {mode === 'calm' && <p className="text-sm text-ink mb-3">{t('v2d.help.subCalm')}</p>}
       <ul className="space-y-2 text-sm">
-        {CONTROL_ROWS.map(([k, v]) => (
+        {controlRows(mode).map(([k, v]) => (
           <li key={v} className="flex gap-3 items-start">
             <span className="shrink-0 min-w-[7.5rem] text-right">
-              <kbd className="inline-block rounded-md border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-xs font-bold text-accent">{k}</kbd>
+              <kbd className="inline-block rounded-md border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-xs font-bold text-accent">{keyLabel(k)}</kbd>
             </span>
             <span className="text-ink-dim">{t(v)}</span>
           </li>
         ))}
-        <li className="flex gap-3 items-start">
-          <span className="shrink-0 min-w-[7.5rem] text-right">
-            <kbd className="inline-block rounded-md border border-line bg-white/5 px-1.5 py-0.5 text-xs font-bold">{t('v2d.help.mouseKey')}</kbd>
-          </span>
-          <span className="text-ink-dim">{t('v2d.help.mouse')}</span>
-        </li>
-        <li className="text-ink-mute text-xs pt-1">{t('v2d.hint.touch')}</li>
+        {mode === 'fast' && (
+          <li className="flex gap-3 items-start">
+            <span className="shrink-0 min-w-[7.5rem] text-right">
+              <kbd className="inline-block rounded-md border border-line bg-white/5 px-1.5 py-0.5 text-xs font-bold">{t('v2d.help.mouseKey')}</kbd>
+            </span>
+            <span className="text-ink-dim">{t('v2d.help.mouse')}</span>
+          </li>
+        )}
+        <li className="text-ink-mute text-xs pt-1">{t(mode === 'calm' ? 'v2d.chint.touch' : 'v2d.hint.touch')}</li>
       </ul>
     </Card>
   );

@@ -9,10 +9,11 @@ import type { MomentViewHandle, MomentViewOptions } from '../view/api';
 import { audio } from '../../audio/api';
 import { t } from '../../core/i18n';
 import { onSettingsChange } from '../../core/settings';
-import { CONTROL_ROWS, Controls } from '../controls/controls';
+import { Controls, controlMode, controlRows, keyLabel } from '../controls/controls';
 import { mountTouchControls, type TouchUi } from '../controls/touch';
+import { mountAimPanel, surname } from '../controls/aimPanel';
 import {
-  ACCENT, GW, HL, HW, drawBall, drawBanner, drawFlash, drawGoals, drawHint, drawLabel, drawMinimap,
+  ACCENT, GW, HL, HW, drawAimMarks, drawBall, sx, sy, drawBanner, drawFlash, drawGoals, drawHint, drawLabel, drawMinimap,
   drawOffscreenArrow, drawPath, drawPitch, drawPlayers, drawPowerBar, drawTarget, drawTimeBar, spawnConfetti,
   stepConfetti, teamLooks, type Cam, type Confetto, type PlayerMeta, type Snap,
 } from './render';
@@ -194,6 +195,10 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
   };
   const unsubEngine = engine.on(onEngineEvent);
 
+  const aimPanel = mountAimPanel(root, controls);
+  let frozenShown = false;
+  const aimMarks: { x: number; y: number; kind: 'pass' | 'danger'; label: string }[] = [];
+
   // ── touch controls (DOM) ──
   let touchUi: TouchUi | null = null;
   const buildTouch = () => { if (!touchUi) touchUi = mountTouchControls(root, controls); };
@@ -217,10 +222,10 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
     const row = (k: string, v: string) => `<div style="display:flex;gap:12px;align-items:flex-start;padding:5px 0"><span style="flex:none;min-width:116px;text-align:right"><b style="display:inline-block;padding:2px 7px;border-radius:6px;border:1px solid rgba(198,255,61,.55);color:#c6ff3d;font:700 12px Inter,system-ui,sans-serif">${k}</b></span><span style="color:#e6efe8;font:500 13.5px/1.4 Inter,system-ui,sans-serif">${v}</span></div>`;
     el.innerHTML = `<div style="width:min(560px,100%);max-height:100%;overflow:auto;border-radius:18px;background:rgba(8,16,11,0.94);border:1px solid rgba(198,255,61,.25);padding:18px 18px 14px;box-shadow:0 20px 60px rgba(0,0,0,.5)">
       <div style="font:400 34px 'Bebas Neue',Impact,sans-serif;color:#c6ff3d;line-height:1">${t('v2d.help.title')}</div>
-      <div style="color:#9fb3a6;font:500 13px Inter,system-ui,sans-serif;margin:2px 0 10px">${t('v2d.help.sub')}</div>
-      ${controls.touchMode ? row('◎', t('v2d.hint.touch')) : [
-        ...CONTROL_ROWS.map(([k, v]) => row(k, t(v))),
-        row(t('v2d.help.mouseKey'), t('v2d.help.mouse')),
+      <div style="color:#9fb3a6;font:500 13px Inter,system-ui,sans-serif;margin:2px 0 10px">${t(controlMode() === 'calm' ? 'v2d.help.subCalm' : 'v2d.help.sub')}</div>
+      ${controls.touchMode ? row('◎', t(controlMode() === 'calm' ? 'v2d.chint.touch' : 'v2d.hint.touch')) : [
+        ...controlRows().map(([k, v]) => row(keyLabel(k), t(v))),
+        ...(controlMode() === 'calm' ? [] : [row(t('v2d.help.mouseKey'), t('v2d.help.mouse'))]),
       ].join('')}
       <div style="margin-top:12px;text-align:center"><button style="padding:10px 18px;border-radius:12px;background:#c6ff3d;color:#0b1210;font:800 14px Inter,system-ui,sans-serif;border:0;cursor:pointer">${t('v2d.help.go')}</button></div>
     </div>`;
@@ -263,10 +268,28 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
   };
 
   // ── frame ──
-  const liveSnap = (): Snap => ({
-    ball: engine.state.ball.pos,
-    players: engine.state.players.map((p) => ({ id: p.id, x: p.pos.x, y: p.pos.y, facing: p.facing, anim: p.anim })),
-  });
+  // extrapolated by the un-stepped engine time (smooth motion between the fixed 120 Hz steps);
+  // objects are reused frame to frame (no per-frame garbage)
+  const snapBall = { x: 0, y: 0, z: 0 };
+  const snapPlayers: Snap['players'] = [];
+  const liveSnap = (): Snap => {
+    const s = engine.state;
+    const lag = Math.min(0.02, Math.max(0, engine.lag ?? 0));
+    const b = s.ball;
+    snapBall.x = b.pos.x + b.vel.x * lag;
+    snapBall.y = b.pos.y + b.vel.y * lag;
+    snapBall.z = Math.max(0, b.pos.z + b.vel.z * lag);
+    snapPlayers.length = s.players.length;
+    s.players.forEach((p, i) => {
+      const q = snapPlayers[i] ?? (snapPlayers[i] = { id: p.id, x: 0, y: 0, facing: 0, anim: p.anim });
+      q.id = p.id;
+      q.x = p.pos.x + p.vel.x * lag;
+      q.y = p.pos.y + p.vel.y * lag;
+      q.facing = p.facing;
+      q.anim = p.anim;
+    });
+    return { ball: snapBall, players: snapPlayers };
+  };
 
   const followCamera = (dt: number, snap: Snap, userPos: Vec2 | null, hasBall: boolean, ballVel: Vec3 | null) => {
     const b = snap.ball;
@@ -340,25 +363,43 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
     const bSpeed = Math.hypot(bv.x, bv.y);
     const loose = !s.ball.ownerId;
     followCamera(rawDt, snap, user ? user.pos : null, hasBall, loose && bSpeed > 8 ? bv : null);
-    if (!paused) updateTrail(s.ball.pos, Math.hypot(bv.x, bv.y, bv.z), rawDt);
+    if (!paused && !engine.frozenForAim) updateTrail(snap.ball, Math.hypot(bv.x, bv.y, bv.z), rawDt);
 
     const ov = controls.overlay();
+    const calm = finishedAt === null ? ov.calm : null;
+    aimPanel.update(calm, controls.touchMode);
+    const frozen = !!engine.frozenForAim;
+    if (frozen !== frozenShown) { frozenShown = frozen; touchUi?.setHidden(frozen); }
     drawPitch(ctx, cam);
     drawGoals(ctx, cam);
 
     // aim helpers under the players
     const live = finishedAt === null;
-    if (live && ov.charge && ov.charge.path.length > 1) drawPath(ctx, cam, ov.charge.path);
-    if (live && ov.info.target && (hasBall || ov.charge)) {
+    if (calm) {
+      const a = calm.analysis;
+      drawPath(ctx, cam, a.path, a.kind === 'shot' ? '#ffcb47' : ACCENT);
+      const land = a.landing ?? a.path[a.path.length - 1];
+      if (land) drawTarget(ctx, cam, land, true, clock);
+    } else if (live && ov.charge && ov.charge.path.length > 1) drawPath(ctx, cam, ov.charge.path);
+    if (live && !calm && ov.info.target && (hasBall || ov.charge)) {
       const tgt = ov.aimPoint && ov.aimPoint.x > HL - 14 && Math.abs(ov.aimPoint.y) < GW + 7
         ? { x: HL, y: Math.max(-(GW - 0.3), Math.min(GW - 0.3, ov.aimPoint.y)) }
         : { x: HL, y: ov.info.target.y };
       if (ov.info.setPiece || (ov.aimPoint && ov.charge)) drawTarget(ctx, cam, tgt, true, clock);
     }
-    if (live && ov.aimPoint && !ov.touch && hasBall && !(ov.aimPoint.x > HL - 14 && Math.abs(ov.aimPoint.y) < GW + 7)) drawTarget(ctx, cam, ov.aimPoint, false, clock);
+    if (live && !calm && ov.aimPoint && !ov.touch && hasBall && !(ov.aimPoint.x > HL - 14 && Math.abs(ov.aimPoint.y) < GW + 7)) drawTarget(ctx, cam, ov.aimPoint, false, clock);
 
-    drawPlayers(ctx, cam, snap, metas, clock, { highlightId: live && hasBall ? ov.pass?.id ?? null : null, highlightKey: ov.touch ? t('v2d.touch.pass') : 'F' });
-    drawBall(ctx, cam, s.ball.pos, trail, roll);
+    drawPlayers(ctx, cam, snap, metas, clock, { highlightId: live && hasBall && !calm ? ov.pass?.id ?? null : null, highlightKey: ov.touch ? t('v2d.touch.pass') : 'F' });
+    drawBall(ctx, cam, snap.ball, trail, roll);
+    if (calm) {
+      const a = calm.analysis;
+      aimMarks.length = 0;
+      const pos = (id: string) => snap.players.find((p) => p.id === id);
+      const r = a.kind === 'pass' && a.receiverId ? pos(a.receiverId) : undefined;
+      if (r) aimMarks.push({ x: r.x, y: r.y, kind: 'pass', label: `${t('v2d.aim.kind.pass')} → ${surname(a.receiverName ?? '')}` });
+      for (const id of a.interceptIds) { const o = pos(id); if (o) aimMarks.push({ x: o.x, y: o.y, kind: 'danger', label: '!' }); }
+      drawAimMarks(ctx, cam, snap.ball, calm.stroke, aimMarks);
+    }
     if (live && ov.charge && user) drawPowerBar(ctx, cam, user.pos, ov.charge.value, ov.charge.curl, ov.charge.chip, { power: t('v2d.aim.power'), chip: t('v2d.aim.chip') });
     if (user) drawOffscreenArrow(ctx, cam, user.pos);
     drawMinimap(ctx, cam, snap, metas, 62);
@@ -366,7 +407,7 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
     else if (live && s.drill) drawTimeBar(ctx, cam, 1);
 
     // hint pill for the first seconds (and while idle)
-    if (live) {
+    if (live && !calm) {
       const since = clock - controls.acted;
       const a = clock < HINT_TIME ? Math.min(1, (HINT_TIME - clock) * 1.5) : since > 6 && since < 12 ? 0.85 : 0;
       drawHint(ctx, cam, controls.hint(ov.mode), a, ov.touch ? 150 : 14);
@@ -414,6 +455,7 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
       try { unsubEngine(); } catch { /* ignore */ }
       unsubSettings();
       controls.dispose();
+      aimPanel.dispose();
       touchUi?.dispose();
       closeHelp();
       window.removeEventListener('keydown', onReplayKey);
@@ -421,6 +463,7 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
       if (!ro) window.removeEventListener('resize', resize);
       root.remove();
     },
+    project: (p) => ({ x: sx(cam, p.x), y: sy(cam, p.y) }),
     setCamera(m) {
       if (ZOOM[m]) mode = m;
     },

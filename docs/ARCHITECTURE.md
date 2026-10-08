@@ -19,6 +19,12 @@ Turkish football culture (Süper Lig, derbies, press tone) should feel authentic
    `src/match/controls/`): WASD runs (camera-relative in 3D), SPACE shoots where you run
    (hold = power, gentle aim assist only when running at goal), F passes in the running
    direction or, without the ball, calls for it (team-mates answer at once on easy/normal).
+   Default control mode "Sakin" (calm, `settings.controlMode`): SPACE with the ball (or a
+   playable loose ball) freezes the engine (`aimStart {freeze}` → `engine.frozenForAim`, no
+   clock) and the user draws the kick (direction / length = power / bend = curl, loft toggle)
+   or sets it with the keys; `controls/calm.ts` + `engine/aim.ts` show the full noise-free path,
+   PAS → name / ŞUT, interceptors and a gentle pass assist. "Hızlı" keeps the real-time scheme.
+   Set pieces open straight in the frozen aim; moments continue while we keep the ball.
 2. **Moments, not 90 minutes.** NSS-style: the match runs as a fast ticker; you play only
    the 4–8 short real-time moments involving you (receive & shoot, 1v1, cross, free kick,
    penalty, defend, build-up). Each moment shifts your live match rating (3.0–10.0).

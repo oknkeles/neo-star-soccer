@@ -17,6 +17,11 @@ export interface FramingInput {
   followBall: boolean;
   /** Narrow viewports (portrait phones) need a wider view. */
   aspect: number;
+  /**
+   * Calm aiming (the game is stopped): a slightly higher overview that keeps the ball and this
+   * point (where the drawn kick goes) in shot.
+   */
+  overview?: Vec2 | null;
 }
 
 export interface Framing { pos: Vec3; target: Vec3; fov: number }
@@ -30,6 +35,7 @@ export function desiredFraming(i: FramingInput): Framing {
   const u = i.user ?? { x: i.ball.x, y: i.ball.y };
   const bx = i.ball.x;
   const by = i.ball.y;
+  if (i.overview) return overviewFraming(i, portrait);
   switch (i.mode) {
     case 'broadcast': {
       const fx = i.followBall ? bx : bx * 0.65 + u.x * 0.35;
@@ -94,6 +100,49 @@ export function desiredFraming(i: FramingInput): Framing {
   }
 }
 
+/** Calm aiming: lift the camera above and behind the ball, looking toward the kick's end point. */
+function overviewFraming(i: FramingInput, portrait: boolean): Framing {
+  const b = i.ball;
+  const o = i.overview ?? { x: b.x + 10, y: b.y };
+  // look between the ball and the target (closer to the ball so the drawn line stays readable)
+  let dx = o.x - b.x;
+  let dy = o.y - b.y;
+  const dl = Math.hypot(dx, dy);
+  const reach = Math.min(dl, 28);
+  const lx = b.x + (dl > 1e-3 ? (dx / dl) * reach * 0.5 : 6);
+  const ly = b.y + (dl > 1e-3 ? (dy / dl) * reach * 0.5 : 0);
+  if (i.mode === 'top') {
+    const h = (portrait ? 64 : 48) + reach * 0.35;
+    return { pos: { x: lx, y: ly - h * 0.2, z: h }, target: { x: lx, y: ly, z: 0 }, fov: 42 };
+  }
+  if (i.mode === 'broadcast') {
+    return { pos: { x: clamp(lx * 0.9, -46, 46), y: -(portrait ? 66 : 52), z: portrait ? 34 : 27 }, target: { x: lx, y: ly * 0.6, z: 0.3 }, fov: portrait ? 44 : 32 };
+  }
+  // behind: from our side of the ball (toward +x), a little toward the aim when it points sideways
+  dx = 0.75 + (dl > 1e-3 ? (dx / dl) * 0.25 : 0.25);
+  dy = dl > 1e-3 ? (dy / dl) * 0.3 : 0;
+  const n = Math.hypot(dx, dy) || 1;
+  const back = (portrait ? 17 : 14) + reach * 0.12;
+  const height = (portrait ? 16 : 13) + reach * 0.12;
+  return {
+    pos: { x: b.x - (dx / n) * back, y: b.y - (dy / n) * back, z: height },
+    target: { x: Math.min(lx, HL + 3), y: ly, z: 0.2 },
+    fov: portrait ? 66 : 54,
+  };
+}
+
+/** Linear blend of two framings (camera transitions without a hard switch). */
+export function blendFraming(a: Framing, b: Framing, w: number): Framing {
+  if (w <= 0.001) return a;
+  if (w >= 0.999) return b;
+  const l = (p: number, q: number) => p + (q - p) * w;
+  return {
+    pos: { x: l(a.pos.x, b.pos.x), y: l(a.pos.y, b.pos.y), z: l(a.pos.z, b.pos.z) },
+    target: { x: l(a.target.x, b.target.x), y: l(a.target.y, b.target.y), z: l(a.target.z, b.target.z) },
+    fov: l(a.fov, b.fov),
+  };
+}
+
 /** Cinematic replay orbit around a centre (pitch frame); `t` in seconds. */
 export function orbitFraming(ball: Vec3, t: number, seed = 0): Framing {
   // Keep the subject on the pitch (a ball flying into the stands would frame concrete).
@@ -125,6 +174,10 @@ export interface CameraRig {
 export function createCameraRig(camera: THREE.PerspectiveCamera): CameraRig {
   const pos = new THREE.Vector3(-20, 8, 0);
   const target = new THREE.Vector3(0, 0, 0);
+  // critically damped springs (smooth start / stop, no velocity jumps when the framing changes)
+  const posVel = new THREE.Vector3();
+  const targetVel = new THREE.Vector3();
+  let fovVel = 0;
   const wantPos = new THREE.Vector3();
   const wantTarget = new THREE.Vector3();
   const dramaPoint = new THREE.Vector3();
@@ -169,10 +222,16 @@ export function createCameraRig(camera: THREE.PerspectiveCamera): CameraRig {
         wantFov = Math.max(26, f.fov - 14 * Math.min(1, k * 2));
         rate = 1.6;
       }
-      const a = 1 - Math.exp(-dt * rate);
-      pos.lerp(wantPos, a);
-      target.lerp(wantTarget, 1 - Math.exp(-dt * rate * 1.6));
-      fov += (wantFov - fov) * a;
+      if (dt > 0) {
+        spring(pos, posVel, wantPos, rate * 2, dt);
+        spring(target, targetVel, wantTarget, rate * 3.2, dt);
+        const om = rate * 2;
+        const ex = Math.exp(-om * dt);
+        const x = fov - wantFov;
+        const tmp1 = (fovVel + om * x) * dt;
+        fovVel = (fovVel - om * tmp1) * ex;
+        fov = wantFov + (x + tmp1) * ex;
+      }
       shakeAmt *= Math.exp(-dt * 5);
       apply();
     },
@@ -180,6 +239,9 @@ export function createCameraRig(camera: THREE.PerspectiveCamera): CameraRig {
       toV3(f.pos, pos);
       toV3(f.target, target);
       fov = f.fov;
+      posVel.set(0, 0, 0);
+      targetVel.set(0, 0, 0);
+      fovVel = 0;
       apply();
     },
     shake(amount) { shakeAmt = Math.max(shakeAmt, amount); },
@@ -190,4 +252,47 @@ export function createCameraRig(camera: THREE.PerspectiveCamera): CameraRig {
     },
   };
   return rig;
+}
+
+const springTmp = new THREE.Vector3();
+/** Exact critically damped spring step toward `want` (stable for any dt). */
+function spring(cur: THREE.Vector3, vel: THREE.Vector3, want: THREE.Vector3, omega: number, dt: number): void {
+  const ex = Math.exp(-omega * dt);
+  const x = springTmp.copy(cur).sub(want);
+  // tmp = (vel + omega·x)·dt
+  const tx = (vel.x + omega * x.x) * dt;
+  const ty = (vel.y + omega * x.y) * dt;
+  const tz = (vel.z + omega * x.z) * dt;
+  vel.set((vel.x - omega * tx) * ex, (vel.y - omega * ty) * ex, (vel.z - omega * tz) * ex);
+  cur.set(want.x + (x.x + tx) * ex, want.y + (x.y + ty) * ex, want.z + (x.z + tz) * ex);
+}
+
+/**
+ * Framing director: blends the follow-the-ball and calm-aim overview framings in and out with
+ * eased weights (no hard cuts between framings); the rig's spring smooths what is left.
+ */
+export interface FramingDirector {
+  frame(dt: number, i: FramingInput): Framing;
+  /** 0..1 how far the calm-aim overview is blended in. */
+  readonly aimWeight: number;
+}
+
+export function createFramingDirector(): FramingDirector {
+  let wFollow = 0;
+  let wAim = 0;
+  let lastOverview: Vec2 | null = null;
+  return {
+    get aimWeight() { return wAim; },
+    frame(dt, i) {
+      wFollow += ((i.followBall ? 1 : 0) - wFollow) * (1 - Math.exp(-dt * 3));
+      wAim += ((i.overview ? 1 : 0) - wAim) * (1 - Math.exp(-dt * 3.5));
+      if (i.overview) lastOverview = { x: i.overview.x, y: i.overview.y };
+      // (only the framings that are blended in are computed)
+      const follow = wFollow > 0.001 ? desiredFraming({ ...i, followBall: true, overview: null }) : null;
+      let f = follow && wFollow >= 0.999 ? follow : desiredFraming({ ...i, followBall: false, overview: null });
+      if (follow && wFollow < 0.999) f = blendFraming(f, follow, wFollow);
+      if (wAim > 0.001 && lastOverview) f = blendFraming(f, desiredFraming({ ...i, followBall: false, overview: lastOverview }), wAim);
+      return f;
+    },
+  };
 }

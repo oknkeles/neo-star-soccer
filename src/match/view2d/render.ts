@@ -660,3 +660,52 @@ export function drawFlash(ctx: CanvasRenderingContext2D, c: Cam, color: string, 
   ctx.fillRect(0, 0, c.W, c.H);
   ctx.globalAlpha = 1;
 }
+
+/** Calm aim: the drawn stroke (from the ball) and receiver / interceptor labels (world positions). */
+export function drawAimMarks(
+  ctx: CanvasRenderingContext2D, c: Cam, ball: Vec2, stroke: readonly Vec2[] | null,
+  marks: { x: number; y: number; kind: 'pass' | 'danger'; label: string }[],
+): void {
+  screenT(ctx, c);
+  ctx.save();
+  if (stroke && stroke.length) {
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(sx(c, ball.x), sy(c, ball.y));
+    for (const p of stroke) ctx.lineTo(sx(c, p.x), sy(c, p.y));
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+    ctx.lineWidth = 6;
+    ctx.stroke();
+    ctx.setLineDash([7, 6]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.font = '800 12px Inter, system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const m of marks) {
+    const x = sx(c, m.x);
+    const y = sy(c, m.y) - Math.max(16, 0.9 * c.ppm) - 12;
+    const pass = m.kind === 'pass';
+    if (!pass) {
+      ctx.strokeStyle = '#ff4f64';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(sx(c, m.x), sy(c, m.y), Math.max(10, 0.85 * c.ppm), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    const w = Math.max(24, ctx.measureText(m.label).width + 16);
+    ctx.fillStyle = pass ? 'rgba(4,10,7,0.85)' : 'rgba(120,10,24,0.88)';
+    ctx.strokeStyle = pass ? ACCENT : '#ff4f64';
+    ctx.lineWidth = 2;
+    rrect(ctx, x - w / 2, y - 11, w, 22, 11);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = pass ? ACCENT : '#fff';
+    ctx.fillText(m.label, x, y + 0.5);
+  }
+  ctx.restore();
+}

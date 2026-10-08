@@ -7,7 +7,11 @@ import { t } from '../../core/i18n';
 import type { Controls } from './controls';
 import '../view2d/strings';
 
-export interface TouchUi { dispose(): void }
+export interface TouchUi {
+  /** Hide the stick and buttons (calm aim open: the finger draws on the pitch instead). */
+  setHidden(h: boolean): void;
+  dispose(): void;
+}
 
 export function mountTouchControls(root: HTMLElement, controls: Controls): TouchUi {
   const ui = document.createElement('div');
@@ -73,5 +77,11 @@ export function mountTouchControls(root: HTMLElement, controls: Controls): Touch
   btn(t('v2d.touch.shoot'), 92, 18, 26, 'shoot', true);
   btn(t('v2d.touch.pass'), 74, 124, 22, 'pass', false);
   root.appendChild(ui);
-  return { dispose: () => ui.remove() };
+  return {
+    setHidden(h) {
+      ui.style.display = h ? 'none' : '';
+      if (h && stickId !== null) { stickId = null; base.style.display = 'none'; controls.setTouchStick({ x: 0, y: 0 }, false); }
+    },
+    dispose: () => ui.remove(),
+  };
 }

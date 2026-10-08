@@ -10,9 +10,10 @@ import { onSettingsChange, updateSettings } from '../../core/settings';
 import type { CameraMode, Kit, MomentEvent, MomentPlayerSpec, MomentPlayerState, MomentSetup, ReplayFrame, Vec2, Vec3 } from '../../core/types';
 import { audio, setAudioFocus } from '../../audio/api';
 import type { MomentEngine } from '../engine/api';
-import { createCameraRig, desiredFraming, orbitFraming } from './camera';
-import { createHud, outcomeTone } from './hud';
+import { createCameraRig, createFramingDirector, desiredFraming, orbitFraming } from './camera';
+import { createHud, outcomeTone, type AimMark } from './hud';
 import { Controls, type ControlsMode } from '../controls/controls';
+import { mountAimPanel, surname } from '../controls/aimPanel';
 import { mountTouchControls, type TouchUi } from '../controls/touch';
 import { goalkeeperColor, resolveKitClash, shade, shortsColor } from './palette';
 import { buildAim, buildUserMarker } from './three/aim';
@@ -76,6 +77,8 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
 
   const camera = new THREE.PerspectiveCamera(52, 1, 0.3, 1500);
   const rig = createCameraRig(camera);
+  /** Eases between follow / calm-aim overview framings (no hard cuts). */
+  const director = createFramingDirector();
   let mode: CameraMode = opts.camera;
 
   // ── players ──
@@ -214,6 +217,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     enabled: () => !paused && !replay && finishedAt === null && !helpOpen,
     axes: () => axes,
   });
+  const aimPanel = mountAimPanel(hud.root, controls);
   let touchUi: TouchUi | null = null;
   const buildTouch = () => { if (!touchUi) touchUi = mountTouchControls(hud.controlsLayer, controls); };
   if (controls.touchMode) buildTouch();
@@ -364,6 +368,12 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
   let hintMode: ControlsMode | null = null;
   let hintSince = 0;
   let lastPath: Vec3[] | null = null;
+  let aimVersion = -1;
+  let aimLook: Vec3 | null = null;
+  let aimShown = false;
+  let frozenShown = false;
+  const strokeScreen: { x: number; y: number }[] = [];
+  const marks: AimMark[] = [];
   // reusable per-frame objects (no allocations in the loop)
   const frames = new Map<string, PlayerFrame>();
   const ballPos = { x: 0, y: 0, z: 0 };
@@ -442,6 +452,14 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     }
     // extrapolate by the un-stepped engine time: smooth motion between fixed 120 Hz steps
     const lag = Math.min(0.02, Math.max(0, engine.lag ?? 0));
+    // calm aim: the world is stopped (poses / ball spin hold too); camera, crowd and HUD stay alive
+    const frozen = !!engine.frozenForAim;
+    const simDt = frozen ? 0 : dt;
+    if (frozen !== frozenShown) {
+      frozenShown = frozen;
+      setAudioFocus(frozen ? 0.6 : 0);
+      hud.setAiming(frozen);
+    }
 
     // Players.
     for (const p of s.players) {
@@ -455,7 +473,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       f.anim = p.anim;
       f.animTime = p.animTime;
       r.setVisible(true);
-      r.update(dt, f);
+      r.update(simDt, f);
     }
     const user = userOf(engine);
     const uf = user ? frames.get(user.id) : undefined;
@@ -465,12 +483,14 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     ballPos.x = s.ball.pos.x + bv.x * lag;
     ballPos.y = s.ball.pos.y + bv.y * lag;
     ballPos.z = Math.max(0, s.ball.pos.z + bv.z * lag);
-    ball.update(dt, ballPos, bv, s.ball.spin);
-    world.goals.forEach((g) => g.update(dt, ballPos, bv));
+    ball.update(simDt, ballPos, bv, s.ball.spin);
+    for (const g of world.goals) g.update(simDt, ballPos, bv);
 
     // Controls overlay (computed once per frame).
     const live = finishedAt === null;
     const ov = live ? controls.overlay() : null;
+    const calm = ov?.calm ?? null;
+    aimPanel.update(calm, controls.touchMode);
 
     // User marker + tag.
     const ur = user ? rigs.get(user.id) : undefined;
@@ -482,26 +502,43 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       tag.sprite.scale.set(sc, sc * 0.25, 1);
       tag.sprite.position.copy(tagPos);
       tag.sprite.position.y += 0.25 + sc * 0.02;
-      tag.sprite.visible = !ov?.charge;
+      tag.sprite.visible = !ov?.charge && !calm;
     } else tag.sprite.visible = false;
 
     // Pass target (who F would pass to) + predicted shot path while charging.
-    const pick = ov && ov.mode === 'attack' && !ov.charge && ov.pass?.id ? ov.pass : null;
+    const pick = ov && ov.mode === 'attack' && !ov.charge && !calm && ov.pass?.id ? ov.pass : null;
     const pf = pick?.id ? frames.get(pick.id) : undefined;
     passMarker.update(clock, pf?.pos.x ?? 0, pf?.pos.y ?? 0, false, !!pf);
-    const path = ov?.charge && ov.charge.path.length > 1 ? ov.charge.path : null;
-    if (path !== lastPath) { aim.setPath(path, ov?.charge?.value ?? 0); lastPath = path; }
+    if (calm) {
+      // the full noise-free path of the frozen aim (rebuilt only when the aim changed)
+      if (calm.version !== aimVersion || !aimShown) {
+        aimVersion = calm.version;
+        aim.setPath(calm.analysis.path, calm.power, calm.analysis.landing);
+        aimShown = true;
+        lastPath = null;
+      }
+    } else {
+      if (aimShown) { aimShown = false; aimVersion = -1; aim.setPath(null, 0); }
+      const path = ov?.charge && ov.charge.path.length > 1 ? ov.charge.path : null;
+      if (path !== lastPath) { aim.setPath(path, ov?.charge?.value ?? 0); lastPath = path; }
+    }
 
     // Camera.
     const sp = Math.hypot(bv.x, bv.y);
     const free = !s.ball.ownerId;
-    const followBall = free && (s.phase === 'flight' || sp > 14) && s.ball.lastTouchSide === 'us' && mode !== 'top';
-    const framing = desiredFraming({
+    const followBall = !frozen && free && (s.phase === 'flight' || sp > 14) && s.ball.lastTouchSide === 'us' && mode !== 'top';
+    // calm aim overview: looks toward where the kick goes; held still while a stroke is drawn
+    // (a moving camera would slide the pitch under the pointer)
+    const an = calm?.analysis;
+    if (!calm) aimLook = null;
+    else if (!calm.drawing || !aimLook) aimLook = an ? an.landing ?? an.path[an.path.length - 1] ?? null : null;
+    const overview = aimLook;
+    const framing = director.frame(rawDt, {
       mode, user: uf ? uf.pos : null, ball: ballPos, ballVel: bv,
-      aiming: false, followBall, aspect: W / H,
+      aiming: false, followBall, aspect: W / H, overview,
     });
     introLeft = Math.max(0, introLeft - rawDt);
-    rig.update(rawDt, framing, introLeft > 0 ? 2.2 : followBall ? 2.8 : 3);
+    rig.update(rawDt, framing, introLeft > 0 ? 2.2 : director.aimWeight > 0.05 ? 2.4 : followBall ? 2.8 : 3);
     updateAxes();
     focusV.set(ballPos.x, 0, -ballPos.y);
     env.setFocus(focusV);
@@ -517,9 +554,31 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       hud.setHint(showHint ? controls.hint(ov.mode) : null);
       const head = ov.charge && user ? headScreen(user.id, 0.55) : null;
       const badge = pick?.id ? headScreen(pick.id, 0.45) : null;
+      let aimFrame: { stroke: { x: number; y: number }[] | null; marks: AimMark[] } | null = null;
+      if (calm) {
+        // drawn stroke (from the ball) + receiver / interceptor labels, in screen space
+        strokeScreen.length = 0;
+        if (calm.stroke && calm.stroke.length) {
+          const b0 = toScreen({ x: ballPos.x, y: ballPos.y, z: 0.05 });
+          if (b0) strokeScreen.push(b0);
+          for (const p of calm.stroke) { const q = toScreen({ x: p.x, y: p.y, z: 0.05 }); if (q) strokeScreen.push(q); }
+        }
+        marks.length = 0;
+        const a = calm.analysis;
+        if (a.kind === 'pass' && a.receiverId) {
+          const hp = headScreen(a.receiverId, 0.5);
+          if (hp) marks.push({ x: hp.x, y: hp.y, kind: 'pass', label: `${t('v2d.aim.kind.pass')} → ${surname(a.receiverName ?? '')}` });
+        }
+        for (const id of a.interceptIds) {
+          const hp = headScreen(id, 0.45);
+          if (hp) marks.push({ x: hp.x, y: hp.y, kind: 'danger', label: '!' });
+        }
+        aimFrame = { stroke: strokeScreen.length > 1 ? strokeScreen : null, marks };
+      }
       hud.frame({
         charge: head && ov.charge ? { x: head.x, y: head.y, value: ov.charge.value, curl: ov.charge.curl, chip: ov.charge.chip } : null,
         pass: badge ? { x: badge.x, y: badge.y, label: controls.touchMode ? t('v2d.touch.pass') : 'F' } : null,
+        aim: aimFrame,
       });
     }
     windTimer -= rawDt;
@@ -544,6 +603,9 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       passMarker.update(clock, 0, 0, false, false);
       aim.setPath(null, 0);
       lastPath = null;
+      aimShown = false;
+      aimPanel.update(null, false);
+      hud.setAiming(false);
       const outcome = s.outcome;
       const text = s.banner ?? (outcome ? t(`view.out.${outcome}`) : null);
       hud.setBanner(text, outcomeTone(outcome));
@@ -575,6 +637,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       if (!ro) window.removeEventListener('resize', resize);
       controls.dispose();
       touchUi?.dispose();
+      aimPanel.dispose();
       hud.dispose();
       setAudioFocus(0);
       rigs.forEach((r) => r.dispose());
@@ -594,6 +657,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       try { renderer.forceContextLoss(); } catch { /* ignore */ }
       canvas.remove();
     },
+    project: (p) => toScreen(p),
     setCamera(m) {
       if (!CAMERA_CYCLE.includes(m)) return;
       mode = m;

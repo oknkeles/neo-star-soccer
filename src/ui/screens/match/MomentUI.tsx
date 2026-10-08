@@ -20,8 +20,12 @@ export function momentTitle(type: MomentType, kind: MomentKind | null): string {
 /** The simple 2D top-down view (optional; 3D is the default). Both share the same controls. */
 export const is2D = (): boolean => getSettings().matchView === '2d';
 
+/** Calm controls ("stop & draw", the default) or the fast real-time ones. */
+const calmControls = (): boolean => getSettings().controlMode !== 'fast';
+
 export function momentTip(type: MomentType, kind: MomentKind | null): string {
-  return kind === 'shootout' ? t('v2d.tip.shootout') : t(`v2d.tip.${type}`);
+  const ns = calmControls() ? 'v2d.ctip' : 'v2d.tip';
+  return kind === 'shootout' ? t(`${ns}.shootout`) : t(`${ns}.${type}`);
 }
 
 /** Short intro card before a moment (minute, title, one-line tip); starts by itself in < 1 s. */
