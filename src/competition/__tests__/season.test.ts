@@ -33,11 +33,12 @@ describe('a full season on a 16-league world', () => {
     timing = playSeason(state, rng, 50);
   });
 
-  it('runs fast enough (season < 3 s, a typical week < 50 ms)', () => {
-    expect(timing.totalMs).toBeLessThan(3000);
+  // Generous limits: CI runners and parallel test workers are much slower than a laptop.
+  it('runs fast enough (season < 10 s, a typical week < 150 ms)', () => {
+    expect(timing.totalMs).toBeLessThan(10000);
     const sorted = timing.weekMs.slice().sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)];
-    expect(median).toBeLessThan(50);
+    expect(median).toBeLessThan(150);
   });
 
   it('plays every league fixture, every cup and the Champions Cup to a conclusion', () => {

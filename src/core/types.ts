@@ -614,8 +614,10 @@ export interface Settings {
   difficulty: 'easy' | 'normal' | 'hard';
   slowmoAim: boolean;
   matchSpeed: number;         // ticker speed multiplier 0.5..4
-  /** Real-time match view: '2d' top-down (default, easiest to play) or '3d'. */
+  /** Real-time match view: '3d' (default) or '2d' top-down (simple / low-spec). */
   matchView?: '2d' | '3d';
+  /** Settings migration version (see core/settings.ts). */
+  version?: number;
 }
 
 // ───────────────────────────── game state ─────────────────────────────

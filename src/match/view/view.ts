@@ -1,16 +1,19 @@
 /**
- * mountMomentView: the real-time 3D moment. Owns the rAF loop (engine.step → visuals → render),
- * wires input + HUD + audio + camera direction, plays the outcome beat and replays.
+ * mountMomentView: the real-time 3D moment. Owns the rAF loop (controls → engine.step → visuals →
+ * render), wires the shared assisted controls (src/match/controls) + HUD + audio + camera,
+ * plays the outcome beat and replays. Rendered positions are extrapolated by the engine's
+ * un-stepped time (engine.lag) so motion never stutters between fixed engine steps.
  */
 import * as THREE from 'three';
 import { t } from '../../core/i18n';
 import { onSettingsChange, updateSettings } from '../../core/settings';
-import type { CameraMode, Kit, MomentEvent, MomentPlayerSpec, MomentSetup, MomentState, ReplayFrame, Vec2, Vec3 } from '../../core/types';
+import type { CameraMode, Kit, MomentEvent, MomentPlayerSpec, MomentPlayerState, MomentSetup, ReplayFrame, Vec2, Vec3 } from '../../core/types';
 import { audio, setAudioFocus } from '../../audio/api';
 import type { MomentEngine } from '../engine/api';
 import { createCameraRig, desiredFraming, orbitFraming } from './camera';
-import { createHud, outcomeTone, type HudContext } from './hud';
-import { ballCarrier, createInput, userPlayer } from './input';
+import { createHud, outcomeTone } from './hud';
+import { Controls, type ControlsMode } from '../controls/controls';
+import { mountTouchControls, type TouchUi } from '../controls/touch';
 import { goalkeeperColor, resolveKitClash, shade, shortsColor } from './palette';
 import { buildAim, buildUserMarker } from './three/aim';
 import { buildBall } from './three/ball';
@@ -20,7 +23,10 @@ import type { MomentViewHandle, MomentViewOptions } from './api';
 import './strings';
 
 const CAMERA_CYCLE: CameraMode[] = ['behind', 'broadcast', 'top'];
-const FINISH_HOLD = 1.5;
+const FINISH_HOLD = 0.35;
+const HINT_TIME = 7;
+/** Snap the camera-relative movement axes to the pitch axes within this angle (stable "up"). */
+const AXIS_SNAP = 0.55;
 
 function defaultAppearance(seed: number): MomentPlayerSpec['appearance'] {
   return { skin: seed % 6, hairStyle: (seed * 7) % 8, hairColor: ['#1b1310', '#3b2516', '#6b4a2b', '#c9a066'][seed % 4], beard: seed % 3, boots: '#101010', height: 178 + (seed % 12) };
@@ -45,12 +51,16 @@ export function teamKits(setup: MomentSetup): { us: Kit; them: Kit; usGk: Kit; t
   };
 }
 
+const userOf = (engine: MomentEngine): MomentPlayerState | undefined => engine.state.players.find((p) => p.isUser);
+
 export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine, setup: MomentSetup, opts: MomentViewOptions): MomentViewHandle {
   const quality = opts.quality;
-  const shadows = opts.shadows && quality !== 'low';
+  // Real shadow maps only on 'high'; 'medium' uses cheap blob shadows (one textured quad each).
+  const shadows = opts.shadows && quality === 'high';
+  const blobs = opts.shadows && quality !== 'high';
   if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
 
-  const renderer = createRenderer(container, quality, shadows);
+  const renderer = createRenderer(container, quality, shadows, 1.5);
   const canvas = renderer.domElement;
   const kits = teamKits(setup);
   const world = buildWorld(renderer, {
@@ -93,10 +103,36 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       isUser,
     };
   };
+  let blobGeo: THREE.PlaneGeometry | null = null;
+  let blobMat: THREE.MeshBasicMaterial | null = null;
+  let blobTex: THREE.CanvasTexture | null = null;
+  if (blobs) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d');
+    if (g) {
+      const grad = g.createRadialGradient(32, 32, 2, 32, 32, 31);
+      grad.addColorStop(0, 'rgba(0,0,0,0.55)');
+      grad.addColorStop(0.55, 'rgba(0,0,0,0.3)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 64, 64);
+    }
+    blobTex = new THREE.CanvasTexture(c);
+    blobMat = new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false });
+    blobGeo = new THREE.PlaneGeometry(1.25, 1.25);
+    blobGeo.rotateX(-Math.PI / 2);
+  }
   const ensureRig = (id: string, side: 'us' | 'them', role: string, isUser: boolean): PlayerRig => {
     let r = rigs.get(id);
     if (!r) {
       r = buildPlayer(makeLook(id, side, role, isUser), bodyMat, quality, shadows);
+      if (blobGeo && blobMat) {
+        const b = new THREE.Mesh(blobGeo, blobMat);
+        b.position.y = 0.02;
+        b.renderOrder = 1;
+        r.root.add(b);
+      }
       rigs.set(id, r);
       playerGroup.add(r.root);
     }
@@ -115,6 +151,8 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
   ball.reset(engine.state.ball.pos);
   const aim = buildAim();
   scene.add(aim.group);
+  const passMarker = buildUserMarker('120,210,255', 1.5);
+  scene.add(passMarker.group);
 
   // ── projection helpers ──
   let W = 1;
@@ -137,44 +175,58 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     return { x: (proj.x + 1) * 0.5 * W, y: (1 - proj.y) * 0.5 * H };
   };
   const fwd = new THREE.Vector3();
-  const screenAxes = () => {
+  const axes = { up: { x: 1, y: 0 }, right: { x: 0, y: -1 } };
+  /** Camera-relative movement axes, snapped to the pitch axes when close (behind camera: up = toward goal). */
+  const updateAxes = () => {
     camera.getWorldDirection(fwd);
     let ux = fwd.x;
     let uy = -fwd.z;
     const l = Math.hypot(ux, uy);
     if (l < 1e-3) { ux = 1; uy = 0; } else { ux /= l; uy /= l; }
-    return { up: { x: ux, y: uy }, right: { x: uy, y: -ux } };
+    const a = Math.atan2(uy, ux);
+    const q = Math.round(a / (Math.PI / 2)) * (Math.PI / 2);
+    if (Math.abs(a - q) < AXIS_SNAP) { ux = Math.round(Math.cos(q)); uy = Math.round(Math.sin(q)); }
+    axes.up.x = ux; axes.up.y = uy;
+    axes.right.x = uy; axes.right.y = -ux;
+  };
+  const headV = new THREE.Vector3();
+  const headScreen = (id: string, lift: number): Vec2 | null => {
+    const r = rigs.get(id);
+    if (!r) return null;
+    r.headTop(headV);
+    headV.y += lift;
+    headV.project(camera);
+    if (headV.z > 1) return null;
+    return { x: (headV.x + 1) * 0.5 * W, y: (1 - headV.y) * 0.5 * H };
   };
 
-  // ── HUD & input ──
+  // ── HUD & controls ──
   let paused = false;
   let helpOpen = false;
   const hud = createHud(container, {
-    onCall: (through) => input.callForBall(through),
-    onSprint: (on) => input.setSprint(on),
-    onLoft: (v) => input.setLoft(v, true),
     onCamera: () => cycleCamera(),
-    onHelp: (open) => { helpOpen = open; input.setEnabled(!open && !finishedAt && !replay); },
+    onHelp: (open) => { helpOpen = open; },
     onReplaySkip: () => endReplay(),
   });
   hud.setCamera(mode);
-  const vision = userSpec?.attrs.vision ?? 60;
-  const input = createInput({
-    element: canvas,
-    engine,
-    momentType: setup.type,
-    vision,
-    toGround, toScreen, screenAxes,
-    viewport: () => ({ w: W, h: H }),
-    setAim: (a) => hud.setAim(a),
-    setPath: (path, power) => aim.setPath(path, power),
-    setLoftUi: (v) => hud.setLoft(v),
-    onAftertouch: (v) => hud.setAftertouch(v),
-    onCameraKey: () => cycleCamera(),
-    onHelpKey: () => (hud.helpOpen ? undefined : hud.showHelp()),
-    onAimChange: (on) => setAudioFocus(on ? 1 : 0),
+  const controls = new Controls(engine, canvas, {
+    toWorld: (x, y) => toGround({ x, y }),
+    enabled: () => !paused && !replay && finishedAt === null && !helpOpen,
+    axes: () => axes,
   });
-  hud.setLoft(input.loft);
+  let touchUi: TouchUi | null = null;
+  const buildTouch = () => { if (!touchUi) touchUi = mountTouchControls(hud.controlsLayer, controls); };
+  if (controls.touchMode) buildTouch();
+  const onFirstTouch = (e: PointerEvent) => { if (e.pointerType === 'touch') { controls.touchMode = true; buildTouch(); } };
+  canvas.addEventListener('pointerdown', onFirstTouch);
+  const onViewKey = (e: KeyboardEvent) => {
+    if (e.repeat || helpOpen || replay) return;
+    const tg = e.target;
+    if (tg instanceof HTMLElement && (tg.tagName === 'INPUT' || tg.tagName === 'TEXTAREA' || tg.isContentEditable)) return;
+    if (e.code === 'KeyV') cycleCamera();
+    else if (e.code === 'KeyH') hud.showHelp(controls.touchMode);
+  };
+  window.addEventListener('keydown', onViewKey);
 
   function cycleCamera() {
     const next = CAMERA_CYCLE[(CAMERA_CYCLE.indexOf(mode) + 1) % CAMERA_CYCLE.length];
@@ -191,7 +243,6 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
   const setCrowd = (v: number) => { crowdLevel = Math.max(0, Math.min(1, v)); audio.setCrowd(crowdLevel); };
   setCrowd(crowdLevel);
   let goalCelebrated = false;
-  const acted: Record<HudContext, boolean> = { attack: false, support: false, defend: false, none: true };
   const sideOf = (id: string) => specs.get(id)?.side ?? engine.state.players.find((p) => p.id === id)?.side ?? 'us';
   const celebrateGoal = (side: 'us' | 'them') => {
     if (goalCelebrated) return;
@@ -217,9 +268,6 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
   };
   const onEngineEvent = (e: MomentEvent) => {
     try { opts.onEvent?.(e); } catch { /* consumer error must not break the view */ }
-    if (e.t === 'kick' && e.by === setup.userId) acted.attack = true;
-    else if (e.t === 'call' && e.by === setup.userId) acted.support = true;
-    else if (e.t === 'tackle' && e.by === setup.userId) acted.defend = true;
     switch (e.t) {
       case 'whistle':
         audio.play(e.kind === 'start' ? 'whistle_short' : e.kind === 'foul' ? 'whistle_long' : 'whistle_short');
@@ -264,7 +312,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
   let finishedCalled = false;
   let bannerHideAt = 0;
   let clock = 0;
-  let introLeft = 1.6;
+  let introLeft = 0.6;
 
   interface ReplayRun { frames: ReplayFrame[]; t: number; end: number; elapsed: number; onDone: () => void; anims: Map<string, { anim: string; t: number }>; seed: number }
   let replay: ReplayRun | null = null;
@@ -280,7 +328,6 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     replay = null;
     hud.setReplay(false);
     hud.setControlsVisible(!finishedAt);
-    input.setEnabled(!finishedAt && !helpOpen);
     for (const p of engine.state.players) rigs.get(p.id)?.snap(p);
     ball.reset(engine.state.ball.pos);
     try { done(); } catch { /* consumer */ }
@@ -301,26 +348,25 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
   ro?.observe(container);
   if (!ro) window.addEventListener('resize', resize);
 
-  // Opening shot: a high wide angle that swoops into the chosen camera.
+  // Opening shot: just above the chosen framing, settling in quickly (no long swoop).
   {
-    const b = engine.state.ball.pos;
-    rig.snap({ pos: { x: b.x - 34, y: b.y - 30, z: 26 }, target: { x: b.x + 6, y: b.y, z: 0 }, fov: 50 });
+    const s0 = engine.state;
+    const u0 = userOf(engine);
+    const f0 = desiredFraming({ mode, user: u0 ? u0.pos : null, ball: s0.ball.pos, ballVel: s0.ball.vel, aiming: false, followBall: false, aspect: W / H });
+    rig.snap({ pos: { x: f0.pos.x - 3, y: f0.pos.y, z: f0.pos.z + 4 }, target: f0.target, fov: f0.fov + 4 });
+    updateAxes();
   }
 
   // ── per-frame ──
   const tagPos = new THREE.Vector3();
   const focusV = new THREE.Vector3();
   let windTimer = 0;
-  const contextTime: Record<HudContext, number> = { attack: 0, support: 0, defend: 0, none: 0 };
-
-  const contextOf = (s: MomentState): HudContext => {
-    let kick = false;
-    try { kick = engine.canKick(); } catch { kick = false; }
-    if (kick) return 'attack';
-    const c = ballCarrier(engine);
-    if (!c) return 'none';
-    return c.side === 'them' ? 'defend' : s.ball.ownerId && c.isUser ? 'attack' : 'support';
-  };
+  let hintMode: ControlsMode | null = null;
+  let hintSince = 0;
+  let lastPath: Vec3[] | null = null;
+  // reusable per-frame objects (no allocations in the loop)
+  const frames = new Map<string, PlayerFrame>();
+  const ballPos = { x: 0, y: 0, z: 0 };
 
   const frameFromReplay = (run: ReplayRun, dt: number) => {
     const f = run.frames;
@@ -391,57 +437,90 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     }
 
     if (!paused && !helpOpen) {
+      controls.update(rawDt, clock);
       try { engine.step(dt); } catch (err) { console.error('[view] engine.step failed', err); }
     }
+    // extrapolate by the un-stepped engine time: smooth motion between fixed 120 Hz steps
+    const lag = Math.min(0.02, Math.max(0, engine.lag ?? 0));
 
     // Players.
-    let user = userPlayer(engine);
     for (const p of s.players) {
       const r = rigs.get(p.id) ?? ensureRig(p.id, p.side, p.role, p.isUser);
+      let f = frames.get(p.id);
+      if (!f) { f = { pos: { x: 0, y: 0 }, vel: p.vel, facing: p.facing, anim: p.anim, animTime: p.animTime }; frames.set(p.id, f); }
+      f.pos.x = p.pos.x + p.vel.x * lag;
+      f.pos.y = p.pos.y + p.vel.y * lag;
+      f.vel = p.vel;
+      f.facing = p.facing;
+      f.anim = p.anim;
+      f.animTime = p.animTime;
       r.setVisible(true);
-      r.update(dt, p);
+      r.update(dt, f);
     }
-    user = userPlayer(engine);
+    const user = userOf(engine);
+    const uf = user ? frames.get(user.id) : undefined;
 
     // Ball + goals.
-    ball.update(dt, s.ball.pos, s.ball.vel, s.ball.spin);
-    world.goals.forEach((g) => g.update(dt, s.ball.pos, s.ball.vel));
+    const bv = s.ball.vel;
+    ballPos.x = s.ball.pos.x + bv.x * lag;
+    ballPos.y = s.ball.pos.y + bv.y * lag;
+    ballPos.z = Math.max(0, s.ball.pos.z + bv.z * lag);
+    ball.update(dt, ballPos, bv, s.ball.spin);
+    world.goals.forEach((g) => g.update(dt, ballPos, bv));
+
+    // Controls overlay (computed once per frame).
+    const live = finishedAt === null;
+    const ov = live ? controls.overlay() : null;
 
     // User marker + tag.
     const ur = user ? rigs.get(user.id) : undefined;
-    marker.update(clock, user?.pos.x ?? 0, user?.pos.y ?? 0, !!user?.hasBall, !!user);
+    marker.update(clock, uf?.pos.x ?? 0, uf?.pos.y ?? 0, !!user?.hasBall, !!user);
     if (ur && user) {
       ur.headTop(tagPos);
       const dist = tagPos.distanceTo(camera.position);
       const sc = Math.max(1.4, Math.min(5.5, dist * 0.06));
       tag.sprite.scale.set(sc, sc * 0.25, 1);
-      tag.sprite.position.copy(tagPos).add(new THREE.Vector3(0, 0.25 + sc * 0.02, 0));
-      tag.sprite.visible = !input.aiming;
+      tag.sprite.position.copy(tagPos);
+      tag.sprite.position.y += 0.25 + sc * 0.02;
+      tag.sprite.visible = !ov?.charge;
     } else tag.sprite.visible = false;
 
+    // Pass target (who F would pass to) + predicted shot path while charging.
+    const pick = ov && ov.mode === 'attack' && !ov.charge && ov.pass?.id ? ov.pass : null;
+    const pf = pick?.id ? frames.get(pick.id) : undefined;
+    passMarker.update(clock, pf?.pos.x ?? 0, pf?.pos.y ?? 0, false, !!pf);
+    const path = ov?.charge && ov.charge.path.length > 1 ? ov.charge.path : null;
+    if (path !== lastPath) { aim.setPath(path, ov?.charge?.value ?? 0); lastPath = path; }
+
     // Camera.
-    const sp = Math.hypot(s.ball.vel.x, s.ball.vel.y);
+    const sp = Math.hypot(bv.x, bv.y);
     const free = !s.ball.ownerId;
     const followBall = free && (s.phase === 'flight' || sp > 14) && s.ball.lastTouchSide === 'us' && mode !== 'top';
     const framing = desiredFraming({
-      mode, user: user ? user.pos : null, ball: s.ball.pos, ballVel: s.ball.vel,
-      aiming: input.aiming || s.phase === 'aiming', followBall, aspect: W / H,
+      mode, user: uf ? uf.pos : null, ball: ballPos, ballVel: bv,
+      aiming: false, followBall, aspect: W / H,
     });
     introLeft = Math.max(0, introLeft - rawDt);
-    rig.update(rawDt, framing, introLeft > 0 ? 1.4 : followBall ? 5 : 3.2);
-    focusV.set(s.ball.pos.x, 0, -s.ball.pos.y);
+    rig.update(rawDt, framing, introLeft > 0 ? 2.2 : followBall ? 2.8 : 3);
+    updateAxes();
+    focusV.set(ballPos.x, 0, -ballPos.y);
     env.setFocus(focusV);
     aim.update(clock);
     world.update(rawDt, clock, camera, rig.target);
 
     // HUD.
-    const aiming = input.aiming || s.phase === 'aiming';
-    hud.setFocus(aiming ? s.focus : null);
-    if (!finishedAt) {
-      const ctx = contextOf(s);
-      contextTime[ctx] += rawDt;
-      hud.setContext(ctx, !acted[ctx] && contextTime[ctx] < 7 && !aiming && !helpOpen);
-      hud.setTime(setup.timeLimit > 0 ? 1 - s.time / setup.timeLimit : null);
+    if (live && ov) {
+      hud.setTime(ov.info.timeLeft ?? (setup.timeLimit > 0 ? 1 - s.time / setup.timeLimit : null));
+      if (ov.mode !== hintMode) { hintMode = ov.mode; hintSince = clock; }
+      const idle = clock - controls.acted;
+      const showHint = !helpOpen && (clock - hintSince < HINT_TIME && clock < 25 || (idle > 6 && idle < 12));
+      hud.setHint(showHint ? controls.hint(ov.mode) : null);
+      const head = ov.charge && user ? headScreen(user.id, 0.55) : null;
+      const badge = pick?.id ? headScreen(pick.id, 0.45) : null;
+      hud.frame({
+        charge: head && ov.charge ? { x: head.x, y: head.y, value: ov.charge.value, curl: ov.charge.curl, chip: ov.charge.chip } : null,
+        pass: badge ? { x: badge.x, y: badge.y, label: controls.touchMode ? t('v2d.touch.pass') : 'F' } : null,
+      });
     }
     windTimer -= rawDt;
     if (windTimer <= 0) {
@@ -458,14 +537,17 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     try { finished = engine.isFinished(); } catch { finished = false; }
     if (finished && finishedAt === null) {
       finishedAt = clock;
-      input.setEnabled(false);
+      controls.cancel();
       hud.setControlsVisible(false);
       hud.setTime(null);
-      hud.setContext('none', false);
+      hud.setHint(null);
+      passMarker.update(clock, 0, 0, false, false);
+      aim.setPath(null, 0);
+      lastPath = null;
       const outcome = s.outcome;
       const text = s.banner ?? (outcome ? t(`view.out.${outcome}`) : null);
       hud.setBanner(text, outcomeTone(outcome));
-      bannerHideAt = clock + 2.6;
+      bannerHideAt = clock + 2.2;
       if (outcome === 'goal' && !goalCelebrated) celebrateGoal('us');
       else if (outcome === 'conceded' && !goalCelebrated) celebrateGoal('them');
       else if (outcome === 'saved' || outcome === 'missed' || outcome === 'woodwork') setCrowd(0.55);
@@ -476,8 +558,6 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       finishedCalled = true;
       try { opts.onFinished?.(); } catch (err) { console.error('[view] onFinished failed', err); }
     }
-    if (!finishedAt && !helpOpen) input.update(rawDt);
-
     renderer.render(scene, camera);
   };
 
@@ -489,15 +569,22 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       try { unsubEngine(); } catch { /* ignore */ }
       unsubSettings();
       window.removeEventListener('keydown', onReplayKey);
+      window.removeEventListener('keydown', onViewKey);
+      canvas.removeEventListener('pointerdown', onFirstTouch);
       ro?.disconnect();
       if (!ro) window.removeEventListener('resize', resize);
-      input.dispose();
+      controls.dispose();
+      touchUi?.dispose();
       hud.dispose();
       setAudioFocus(0);
       rigs.forEach((r) => r.dispose());
       rigs.clear();
       bodyMat.dispose();
       marker.dispose();
+      passMarker.dispose();
+      blobGeo?.dispose();
+      blobMat?.dispose();
+      blobTex?.dispose();
       tag.dispose();
       ball.dispose();
       aim.dispose();
@@ -514,7 +601,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     },
     pause(p) {
       paused = p;
-      if (p) input.cancelAim();
+      if (p) controls.cancel();
     },
     playReplay(frames, onDone) {
       if (!frames.length) { onDone(); return; }
@@ -523,8 +610,11 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       const end = sorted[sorted.length - 1].t;
       const start = Math.max(sorted[0].t, end - 6);
       replay = { frames: sorted, t: start, end, elapsed: 0, onDone, anims: new Map(), seed: Math.random() * Math.PI * 2 };
-      input.setEnabled(false);
+      controls.cancel();
       hud.setBanner(null);
+      passMarker.update(0, 0, 0, false, false);
+      aim.setPath(null, 0);
+      lastPath = null;
       hud.setReplay(true);
       const f0 = sorted.find((f) => f.t >= start) ?? sorted[0];
       ball.reset(f0.ball);
@@ -533,7 +623,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     },
   };
 
-  if (opts.showHelp) hud.showHelp();
+  if (opts.showHelp) hud.showHelp(controls.touchMode);
   raf = requestAnimationFrame((n) => { last = n; tick(n); });
   return handle;
 }

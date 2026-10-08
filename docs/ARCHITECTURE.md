@@ -15,7 +15,10 @@ Turkish football culture (Süper Lig, derbies, press tone) should feel authentic
 
 1. **The ball is the star.** Physics-driven kicks: power, loft, *curl* (Magnus effect),
    aftertouch, wind, wet pitches, posts and crossbars, goalkeepers fooled by bend.
-   The "Falso Çizgisi" gesture (draw the shot) is the signature mechanic.
+   Controls are assisted and keyboard-first (shared by the 3D view and the simple 2D view,
+   `src/match/controls/`): WASD runs (camera-relative in 3D), SPACE shoots where you run
+   (hold = power, gentle aim assist only when running at goal), F passes in the running
+   direction or, without the ball, calls for it (team-mates answer at once on easy/normal).
 2. **Moments, not 90 minutes.** NSS-style: the match runs as a fast ticker; you play only
    the 4–8 short real-time moments involving you (receive & shoot, 1v1, cross, free kick,
    penalty, defend, build-up). Each moment shifts your live match rating (3.0–10.0).
@@ -125,7 +128,7 @@ trajectory (length ∝ vision). Goal → slow-motion replay with cinematic camer
 | Procedural narrative, events, storylines, commentary | `src/narrative/**` | narrative | `src/narrative/api.ts` |
 | Claude narrator | `src/ai/**` | ai | `src/ai/api.ts` |
 | Real-time moment engine | `src/match/engine/**` | engine | `src/match/engine/api.ts` |
-| 3D view, input, audio | `src/match/view/**`, `src/audio/**` | view | `src/match/view/api.ts`, `src/audio/api.ts` |
+| 3D view (default), 2D view, shared controls, audio | `src/match/view/**`, `src/match/view2d/**`, `src/match/controls/**`, `src/audio/**` | view | `src/match/view/api.ts`, `src/match/view2d/api.ts`, `src/audio/api.ts` |
 | Match flow + match/drill screens | `src/match/flow/**`, `src/ui/screens/match/**` | flow | `src/match/flow/api.ts` |
 | Game controller, saves, React store | `src/game/**` | game | `src/game/api.ts` |
 | UI shell: layout, overlays, avatar, title, new career, hub, settings, inbox, press | `src/ui/Layout.tsx`, `src/ui/GlobalOverlays.tsx`, `src/ui/components/Avatar.tsx`, `src/ui/screens/{Title,NewCareer,Hub,Settings,Inbox,Press}Screen.tsx`, `src/ui/screens/shell/**` | ui-shell | — |

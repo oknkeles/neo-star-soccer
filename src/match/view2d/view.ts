@@ -9,7 +9,8 @@ import type { MomentViewHandle, MomentViewOptions } from '../view/api';
 import { audio } from '../../audio/api';
 import { t } from '../../core/i18n';
 import { onSettingsChange } from '../../core/settings';
-import { Controls } from './controls';
+import { CONTROL_ROWS, Controls } from '../controls/controls';
+import { mountTouchControls, type TouchUi } from '../controls/touch';
 import {
   ACCENT, GW, HL, HW, drawBall, drawBanner, drawFlash, drawGoals, drawHint, drawLabel, drawMinimap,
   drawOffscreenArrow, drawPath, drawPitch, drawPlayers, drawPowerBar, drawTarget, drawTimeBar, spawnConfetti,
@@ -18,7 +19,7 @@ import {
 import '../view/strings';
 import './strings';
 
-const FINISH_HOLD = 1.5;
+const FINISH_HOLD = 0.35;
 const HINT_TIME = 7;
 const ZOOM: Record<CameraMode, number> = { behind: 50, broadcast: 64, top: 84 };
 
@@ -194,73 +195,8 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
   const unsubEngine = engine.on(onEngineEvent);
 
   // ── touch controls (DOM) ──
-  let touchUi: HTMLDivElement | null = null;
-  const buildTouch = () => {
-    if (touchUi) return;
-    touchUi = document.createElement('div');
-    touchUi.style.cssText = 'position:absolute;inset:0;pointer-events:none;';
-    const zone = document.createElement('div');
-    zone.style.cssText = 'position:absolute;left:0;bottom:0;width:50%;height:65%;pointer-events:auto;';
-    const base = document.createElement('div');
-    base.style.cssText = 'position:absolute;width:120px;height:120px;margin:-60px 0 0 -60px;border-radius:50%;background:rgba(255,255,255,0.08);border:2px solid rgba(255,255,255,0.25);display:none;';
-    const knob = document.createElement('div');
-    knob.style.cssText = 'position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:50%;background:rgba(198,255,61,0.55);border:2px solid rgba(198,255,61,0.9);';
-    base.appendChild(knob);
-    zone.appendChild(base);
-    let stickId: number | null = null;
-    let ox = 0;
-    let oy = 0;
-    const stick = (e: PointerEvent, end = false) => {
-      if (end) { stickId = null; base.style.display = 'none'; controls.setTouchStick({ x: 0, y: 0 }, false); return; }
-      const r = zone.getBoundingClientRect();
-      const x = e.clientX - r.left;
-      const y = e.clientY - r.top;
-      let dx = x - ox;
-      let dy = y - oy;
-      const l = Math.hypot(dx, dy);
-      const max = 50;
-      if (l > max) { dx = (dx / l) * max; dy = (dy / l) * max; }
-      knob.style.transform = `translate(${dx}px,${dy}px)`;
-      const m = Math.min(1, l / max);
-      controls.setTouchStick(l > 8 ? { x: (dx / (Math.hypot(dx, dy) || 1)) * m, y: (-dy / (Math.hypot(dx, dy) || 1)) * m } : { x: 0, y: 0 }, l > max * 0.95);
-    };
-    zone.addEventListener('pointerdown', (e) => {
-      if (stickId !== null) return;
-      e.preventDefault();
-      stickId = e.pointerId;
-      zone.setPointerCapture?.(e.pointerId);
-      const r = zone.getBoundingClientRect();
-      ox = e.clientX - r.left;
-      oy = e.clientY - r.top;
-      base.style.left = `${ox}px`;
-      base.style.top = `${oy}px`;
-      base.style.display = 'block';
-      knob.style.transform = '';
-      audio.unlock();
-    });
-    zone.addEventListener('pointermove', (e) => { if (e.pointerId === stickId) stick(e); });
-    const end = (e: PointerEvent) => { if (e.pointerId === stickId) stick(e, true); };
-    zone.addEventListener('pointerup', end);
-    zone.addEventListener('pointercancel', end);
-    touchUi.appendChild(zone);
-    const btn = (label: string, size: number, right: number, bottom: number, kind: 'shoot' | 'pass' | 'through', strong: boolean) => {
-      const b = document.createElement('button');
-      b.textContent = label;
-      b.style.cssText = `position:absolute;right:${right}px;bottom:calc(${bottom}px + env(safe-area-inset-bottom));width:${size}px;height:${size}px;border-radius:50%;pointer-events:auto;touch-action:none;` +
-        `font:800 ${Math.round(size * 0.2)}px Inter,system-ui,sans-serif;letter-spacing:0.04em;color:${strong ? '#0b1210' : '#fff'};` +
-        `background:${strong ? 'rgba(198,255,61,0.92)' : 'rgba(10,20,14,0.6)'};border:2px solid ${strong ? '#e8ffb0' : 'rgba(255,255,255,0.35)'};box-shadow:0 6px 18px rgba(0,0,0,0.35);`;
-      b.addEventListener('pointerdown', (e) => { e.preventDefault(); b.setPointerCapture?.(e.pointerId); b.style.transform = 'scale(0.92)'; controls.touchButton(kind, true); });
-      const up = (e: PointerEvent) => { e.preventDefault(); b.style.transform = ''; controls.touchButton(kind, false); };
-      b.addEventListener('pointerup', up);
-      b.addEventListener('pointercancel', up);
-      b.addEventListener('contextmenu', (e) => e.preventDefault());
-      touchUi!.appendChild(b);
-    };
-    btn(t('v2d.touch.shoot'), 92, 18, 26, 'shoot', true);
-    btn(t('v2d.touch.pass'), 70, 122, 18, 'pass', false);
-    btn(t('v2d.touch.through'), 54, 40, 132, 'through', false);
-    root.appendChild(touchUi);
-  };
+  let touchUi: TouchUi | null = null;
+  const buildTouch = () => { if (!touchUi) touchUi = mountTouchControls(root, controls); };
   if (controls.touchMode) buildTouch();
   const onFirstTouch = (e: PointerEvent) => { if (e.pointerType === 'touch') { controls.touchMode = true; buildTouch(); } };
   root.addEventListener('pointerdown', onFirstTouch);
@@ -283,15 +219,7 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
       <div style="font:400 34px 'Bebas Neue',Impact,sans-serif;color:#c6ff3d;line-height:1">${t('v2d.help.title')}</div>
       <div style="color:#9fb3a6;font:500 13px Inter,system-ui,sans-serif;margin:2px 0 10px">${t('v2d.help.sub')}</div>
       ${controls.touchMode ? row('◎', t('v2d.hint.touch')) : [
-        row('WASD / ← ↑ → ↓', t('v2d.help.move')),
-        row('Shift', t('v2d.help.sprint')),
-        row('SPACE', t('v2d.help.shoot')),
-        row('Q / E', t('v2d.help.curl')),
-        row('F', t('v2d.help.pass')),
-        row('R', t('v2d.help.through')),
-        row('C / SPACE', t('v2d.help.call')),
-        row('SPACE / F', t('v2d.help.defend')),
-        row('W / S', t('v2d.help.setPiece')),
+        ...CONTROL_ROWS.map(([k, v]) => row(k, t(v))),
         row(t('v2d.help.mouseKey'), t('v2d.help.mouse')),
       ].join('')}
       <div style="margin-top:12px;text-align:center"><button style="padding:10px 18px;border-radius:12px;background:#c6ff3d;color:#0b1210;font:800 14px Inter,system-ui,sans-serif;border:0;cursor:pointer">${t('v2d.help.go')}</button></div>
@@ -425,7 +353,7 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
       const tgt = ov.aimPoint && ov.aimPoint.x > HL - 14 && Math.abs(ov.aimPoint.y) < GW + 7
         ? { x: HL, y: Math.max(-(GW - 0.3), Math.min(GW - 0.3, ov.aimPoint.y)) }
         : { x: HL, y: ov.info.target.y };
-      if (ov.info.dist < 30 || ov.charge || ov.info.setPiece) drawTarget(ctx, cam, tgt, !!ov.charge || !!ov.info.setPiece, clock);
+      if (ov.info.setPiece || (ov.aimPoint && ov.charge)) drawTarget(ctx, cam, tgt, true, clock);
     }
     if (live && ov.aimPoint && !ov.touch && hasBall && !(ov.aimPoint.x > HL - 14 && Math.abs(ov.aimPoint.y) < GW + 7)) drawTarget(ctx, cam, ov.aimPoint, false, clock);
 
@@ -486,6 +414,7 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
       try { unsubEngine(); } catch { /* ignore */ }
       unsubSettings();
       controls.dispose();
+      touchUi?.dispose();
       closeHelp();
       window.removeEventListener('keydown', onReplayKey);
       ro?.disconnect();

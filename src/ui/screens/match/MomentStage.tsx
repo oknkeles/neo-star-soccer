@@ -1,8 +1,8 @@
 /**
  * Hosts one real-time moment: creates the engine, mounts the view into a full-bleed container
- * and reports the MomentResult exactly once. The default view is the 2D top-down canvas
- * (easy, assisted controls); the three.js view is used only when settings.matchView === '3d'
- * (and falls back to 2D without WebGL). Falls back (onFail) when the engine or the view are
+ * and reports the MomentResult exactly once. The default view is the three.js 3D view; the
+ * simple 2D top-down canvas is used when settings.matchView === '2d' (or without WebGL).
+ * Both share the same assisted controls (src/match/controls). Falls back (onFail) when the engine or the view are
  * unavailable, so the match can always continue.
  */
 import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
@@ -66,7 +66,7 @@ export function MomentStage({
       engine = createMoment(setup);
       const s = initial.current;
       const showHelp = help.current;
-      const mount = s.matchView === '3d' && hasWebGL() ? mountMomentView : mountMomentView2D;
+      const mount = s.matchView !== '2d' && hasWebGL() ? mountMomentView : mountMomentView2D;
       handle = mount(el, engine, setup, {
         camera: s.camera,
         quality: s.graphics.quality,

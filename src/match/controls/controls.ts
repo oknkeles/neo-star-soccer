@@ -1,46 +1,78 @@
 /**
- * Easy, assisted controls for the 2D view (keyboard first, mouse optional, touch fallback),
- * translated into engine ControlCommands. Shots / passes are aimed by the engine assists.
+ * Easy, assisted controls shared by the 3D and the 2D match views (keyboard first, touch
+ * fallback, mouse optional), translated into engine ControlCommands. Kicks go where the player
+ * RUNS; the engine assists solve power / aim (gentle goal-mouth assist when running at goal).
  *
- *  - WASD / arrows: run (moveDir) · Shift: sprint · click on the pitch (without the ball): run there
- *  - SPACE / left mouse: hold to charge, release to shoot (auto aim; cursor aims when the mouse is active)
- *    Q / E (or mouse sideways) while charging: curl · Shift on release: chip if the keeper is off his line
- *  - F / right mouse: pass to the best team-mate (direction of movement / cursor) · R: through ball
- *  - Without the ball: SPACE / F near the ball = one-touch; near the carrier = tackle (double-tap: slide);
- *    otherwise SPACE / F / C = call for the ball (R = ask for a through ball)
- *  - Set pieces: W / S move the target along the goal line
+ *  - WASD / arrows: run (camera-relative in 3D: "up" = away from the camera) · Shift: sprint
+ *  - SPACE with the ball: hold to charge (~0.6 s), release = shot in the running direction
+ *    (no keys held: the facing direction). Q / E while charging: curl. Shift on release: chip.
+ *  - SPACE without the ball: near a loose ball = one-touch shot; near the carrier = tackle
+ *    (double-tap: slide); a team-mate on the ball = call for it.
+ *  - F with the ball: pass to the best team-mate in the running direction (±50°, else the most
+ *    open one ahead). Without the ball: call for it (held while running = through ball ahead).
+ *  - R: through ball (without the ball: ask for one) · C: call for the ball.
+ *  - Set pieces: W / S move the target along the goal line.
+ *  - Mouse: click the pitch = run there. Mouse aiming only with `mouseAim`.
  */
 import type { KickParams, Vec2, Vec3 } from '../../core/types';
-import { assistInfo, assistPass, assistShot, pickPass, type AssistInfo, type MomentEngine, type PassPick } from '../engine/api';
+import {
+  assistInfo, assistPass, assistShot, assistShotDir, kickDir, pickPass, type AssistInfo, type MomentEngine, type PassPick,
+} from '../engine/api';
 import { audio } from '../../audio/api';
 import { t } from '../../core/i18n';
+import '../view2d/strings';
 
-const CHARGE_TIME = 0.8;
+const CHARGE_TIME = 0.6;
 const DOUBLE_TAP = 0.32;
 const MOUSE_ACTIVE = 2.5;
+/** Pass cone around the running direction. */
+const PASS_CONE = (50 * Math.PI) / 180;
+/** Holding F (without the ball) this long while running = ask for a through ball. */
+const THROUGH_HOLD = 0.3;
 
 type Src = 'key' | 'mouse' | 'touch';
 
 interface Charge { t: number; src: Src; curl: number; aim: Vec2 | null; startAim: Vec2 | null }
 
+export type ControlsMode = 'attack' | 'noBall' | 'defend' | 'setPiece' | 'corner';
+
 export interface ControlsOverlay {
   charge: { value: number; curl: number; chip: boolean; params: KickParams | null; path: Vec3[] } | null;
   pass: PassPick | null;
   info: AssistInfo;
-  mode: 'attack' | 'noBall' | 'defend' | 'setPiece' | 'corner';
+  mode: ControlsMode;
   aimPoint: Vec2 | null;
   touch: boolean;
 }
 
 export interface ControlsOptions {
-  /** CSS-pixel position → world metres. */
-  toWorld: (x: number, y: number) => Vec2;
+  /** CSS-pixel position on the surface → world metres (null when off the pitch). */
+  toWorld: (x: number, y: number) => Vec2 | null;
   /** Whether the controls may act (live, not paused / replaying / finished). */
   enabled: () => boolean;
+  /** Screen "up" / "right" as pitch-frame unit vectors (3D camera). Default: up = +y, right = +x. */
+  axes?: () => { up: Vec2; right: Vec2 };
+  /** The cursor aims shots / passes (off by default: kicks follow the running direction). */
+  mouseAim?: boolean;
 }
+
+/** Key → help text rows of the scheme (Settings, help cards). Keys are i18n keys. */
+export const CONTROL_ROWS: [string, string][] = [
+  ['WASD / ← ↑ → ↓', 'v2d.help.move'],
+  ['Shift', 'v2d.help.sprint'],
+  ['SPACE', 'v2d.help.shoot'],
+  ['Q / E', 'v2d.help.curl'],
+  ['F', 'v2d.help.pass'],
+  ['R', 'v2d.help.through'],
+  ['C', 'v2d.help.call'],
+  ['SPACE / F', 'v2d.help.defend'],
+  ['W / S', 'v2d.help.setPiece'],
+];
 
 const isTyping = (el: EventTarget | null) =>
   el instanceof HTMLElement && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+
+const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyF', 'KeyR', 'KeyC', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight']);
 
 export class Controls {
   private keys = new Set<string>();
@@ -62,6 +94,8 @@ export class Controls {
   private aimPath: Vec3[] = [];
   private touchDir: Vec2 = { x: 0, y: 0 };
   private touchSprint = false;
+  private passHeld = -1;
+  private throughCallT = 0;
   touchMode = false;
   private disposers: (() => void)[] = [];
   private chipHeld = false;
@@ -96,6 +130,10 @@ export class Controls {
     return this.state.players.find((p) => p.isUser)?.id ?? this.engine.setup.userId;
   }
   private user() { return this.state.players.find((p) => p.isUser) ?? null; }
+  private owner() {
+    const id = this.state.ball.ownerId;
+    return id ? this.state.players.find((p) => p.id === id) ?? null : null;
+  }
   private hasBall(): boolean { return this.state.ball.ownerId === this.userId; }
   private canKick(): boolean { try { return this.engine.canKick(); } catch { return false; } }
   private send(cmd: Parameters<MomentEngine['input']>[0]): void {
@@ -103,13 +141,14 @@ export class Controls {
   }
 
   private mouseActive(): boolean {
-    return !this.touchMode && this.mouse.inside && !!this.mouse.world && this.clock - this.mouse.moved < MOUSE_ACTIVE;
+    return !!this.opts.mouseAim && !this.touchMode && this.mouse.inside && !!this.mouse.world && this.clock - this.mouse.moved < MOUSE_ACTIVE;
   }
 
   private releaseAll(): void {
     this.keys.clear();
-    if (this.charge) this.charge = null;
+    this.charge = null;
     this.armed = null;
+    this.passHeld = -1;
     this.touchDir = { x: 0, y: 0 };
     this.touchSprint = false;
     this.dragMove = false;
@@ -121,6 +160,7 @@ export class Controls {
     this.armed = null;
     this.tackleQ = null;
     this.dragMove = false;
+    this.passHeld = -1;
   }
 
   // ───────────────────────── keyboard ─────────────────────────
@@ -128,8 +168,7 @@ export class Controls {
   private onKey(e: KeyboardEvent, down: boolean): void {
     if (isTyping(e.target)) return;
     const code = e.code;
-    const game = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyF', 'KeyR', 'KeyC', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'];
-    if (!game.includes(code)) return;
+    if (!GAME_KEYS.has(code)) return;
     if (!this.opts.enabled()) { if (!down) this.keys.delete(code); return; }
     if (code === 'Space' || code.startsWith('Arrow')) e.preventDefault();
     if (down) {
@@ -138,12 +177,13 @@ export class Controls {
       this.keys.add(code);
       this.acted = this.clock;
       if (code === 'Space') this.action('shoot', 'key', 'Space');
-      else if (code === 'KeyF') this.action('pass', 'key', 'KeyF');
+      else if (code === 'KeyF') { this.passHeld = this.clock; this.action('pass', 'key', 'KeyF'); }
       else if (code === 'KeyR') this.action('through', 'key', 'KeyR');
       else if (code === 'KeyC') this.call(false, 'KeyC');
     } else {
       this.keys.delete(code);
       if (code === 'Space' && this.charge?.src === 'key') this.release();
+      if (code === 'KeyF') this.passHeld = -1;
       if (this.armed?.hold === code) this.armed.until = Math.min(this.armed.until, this.clock + 0.2);
     }
   }
@@ -177,7 +217,7 @@ export class Controls {
     const s = this.state;
     const u = this.user();
     if (!u) return;
-    const owner = s.ball.ownerId ? s.players.find((p) => p.id === s.ball.ownerId) : null;
+    const owner = this.owner();
     if (owner && owner.side === 'them') {
       const d = Math.hypot(owner.pos.x - u.pos.x, owner.pos.y - u.pos.y);
       if (d < 4 && kind !== 'through') {
@@ -189,11 +229,12 @@ export class Controls {
     if (!owner) {
       const d = Math.hypot(s.ball.pos.x - u.pos.x, s.ball.pos.y - u.pos.y);
       if (d < 7 && kind !== 'through') {
-        this.armed = { kind: kind === 'shoot' ? 'shot' : 'pass', until: this.clock + 0.6, hold: src === 'key' ? code : null };
+        this.armed = { kind: kind === 'shoot' ? 'shot' : 'pass', until: this.clock + 0.6, hold: src === 'key' ? code : src === 'touch' ? code : null };
         return;
       }
     }
-    if (owner && owner.side === 'us') this.send({ kind: 'callForBall', through: kind === 'through' || dbl });
+    // a team-mate has it (or is about to): ask for it
+    if (!owner || owner.side === 'us') this.send({ kind: 'callForBall', through: kind === 'through' || dbl });
   }
 
   private doTackle(): void {
@@ -225,10 +266,6 @@ export class Controls {
     return this.charge ? Math.min(1, this.charge.t / CHARGE_TIME) : 0;
   }
 
-  private intentCurl(): number {
-    return this.charge ? this.charge.curl : 0;
-  }
-
   private shiftHeld(): boolean {
     return this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') || this.chipHeld;
   }
@@ -242,8 +279,13 @@ export class Controls {
     this.fireShot(Math.min(1, c.t / CHARGE_TIME), c.curl, c.aim, this.shiftHeld());
   }
 
+  private shotParams(charge: number, curl: number, aim: Vec2 | null, chip: boolean): KickParams | null {
+    if (aim) return assistShot(this.engine, { charge, curl, aim, offset: this.offset, chip });
+    return assistShotDir(this.engine, { charge, curl, dir: this.worldDir(), offset: this.offset, chip });
+  }
+
   private fireShot(charge: number, curl: number, aim: Vec2 | null, chip = false): void {
-    const p = assistShot(this.engine, { charge, curl, aim, offset: this.offset, chip });
+    const p = this.shotParams(charge, curl, aim, chip);
     if (p) {
       this.send({ kind: 'kick', params: p });
       this.acted = this.clock;
@@ -252,20 +294,31 @@ export class Controls {
 
   private pass(through: boolean, src: Src): void {
     const toward = src === 'mouse' || this.mouseActive() ? this.mouse.world : null;
-    const p = assistPass(this.engine, { pref: this.moveDir(), toward, through });
+    const pref = this.worldDir() ?? kickDir(this.engine, null);
+    const p = assistPass(this.engine, { pref, toward, through, cone: through ? undefined : PASS_CONE });
     if (p) {
       this.send({ kind: 'kick', params: p });
       this.acted = this.clock;
     }
   }
 
-  private moveDir(): Vec2 | null {
+  /** Keys / stick as a screen direction (x = right, y = up), length ≤ 1. */
+  private screenDir(): Vec2 | null {
     const k = this.keys;
     let x = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
     let y = (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0) - (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0);
     if (!x && !y && (this.touchDir.x || this.touchDir.y)) { x = this.touchDir.x; y = this.touchDir.y; }
     const l = Math.hypot(x, y);
     return l > 0.05 ? { x: x / Math.max(1, l), y: y / Math.max(1, l) } : null;
+  }
+
+  /** The running direction in the pitch frame (camera-relative), null when no keys are held. */
+  worldDir(): Vec2 | null {
+    const d = this.screenDir();
+    if (!d) return null;
+    const ax = this.opts.axes?.();
+    if (!ax) return d;
+    return { x: ax.right.x * d.x + ax.up.x * d.y, y: ax.right.y * d.x + ax.up.y * d.y };
   }
 
   // ───────────────────────── mouse ─────────────────────────
@@ -294,10 +347,12 @@ export class Controls {
     this.onPointerMove(e);
     this.mouse.moved = this.clock;
     this.acted = this.clock;
-    if (e.button === 2) { this.action('pass', 'mouse', 'Mouse2'); return; }
-    if (e.button !== 0) return;
-    if (this.hasBall() || this.canKick()) { this.action('shoot', 'mouse', 'Mouse0'); return; }
-    const owner = this.state.ball.ownerId ? this.state.players.find((p) => p.id === this.state.ball.ownerId) : null;
+    if (this.opts.mouseAim) {
+      if (e.button === 2) { this.action('pass', 'mouse', 'Mouse2'); return; }
+      if (e.button !== 0) return;
+      if (this.hasBall() || this.canKick()) { this.action('shoot', 'mouse', 'Mouse0'); return; }
+    } else if (e.button !== 0) return;
+    const owner = this.owner();
     const u = this.user();
     if (owner && owner.side === 'them' && u && Math.hypot(owner.pos.x - u.pos.x, owner.pos.y - u.pos.y) < 2.5) {
       this.action('shoot', 'mouse', 'Mouse0');
@@ -321,6 +376,7 @@ export class Controls {
 
   // ───────────────────────── touch (driven by the view's DOM overlay) ─────────────────────────
 
+  /** Joystick in screen terms (x = right, y = up). */
   setTouchStick(dir: Vec2, sprint: boolean): void {
     this.touchDir = dir;
     this.touchSprint = sprint;
@@ -330,10 +386,18 @@ export class Controls {
   touchButton(kind: 'shoot' | 'pass' | 'through', down: boolean): void {
     if (!this.opts.enabled()) return;
     audio.unlock();
-    if (down) { this.keys.add(`T-${kind}`); this.acted = this.clock; this.action(kind, 'touch', `T-${kind}`); return; }
-    this.keys.delete(`T-${kind}`);
+    const code = `T-${kind}`;
+    if (down) {
+      this.keys.add(code);
+      this.acted = this.clock;
+      if (kind === 'pass') this.passHeld = this.clock;
+      this.action(kind, 'touch', code);
+      return;
+    }
+    this.keys.delete(code);
+    if (kind === 'pass') this.passHeld = -1;
     if (kind === 'shoot' && this.charge?.src === 'touch') this.release();
-    if (this.armed?.hold === `T-${kind}`) this.armed.until = Math.min(this.armed.until, this.clock + 0.2);
+    if (this.armed?.hold === code) this.armed.until = Math.min(this.armed.until, this.clock + 0.2);
   }
 
   // ───────────────────────── per frame ─────────────────────────
@@ -346,7 +410,7 @@ export class Controls {
     }
     const info = assistInfo(this.engine, this.offset);
     const k = this.keys;
-    const dir = this.moveDir();
+    const dir = this.worldDir();
 
     // set pieces: W / S (or the stick) move the target along the goal line
     if (info.setPiece === 'free_kick' || info.setPiece === 'penalty') {
@@ -360,7 +424,7 @@ export class Controls {
       this.offset = 0;
     }
 
-    // movement
+    // movement (no keys: the engine runs the user onto passes meant for him)
     const d = dir ?? { x: 0, y: 0 };
     if (dir || !this.dragMove) {
       if (Math.abs(d.x - this.lastDir.x) > 1e-3 || Math.abs(d.y - this.lastDir.y) > 1e-3) {
@@ -395,12 +459,19 @@ export class Controls {
         }
         this.pathT -= dt;
         if (this.pathT <= 0) {
-          this.pathT = 0.09;
-          this.aimParams = assistShot(this.engine, { charge: this.chargeValue(), curl: c.curl, aim: c.aim, offset: this.offset, chip: this.shiftHeld() });
-          try { this.aimPath = this.aimParams ? this.engine.predictKick(this.aimParams, 1.6) : []; } catch { this.aimPath = []; }
+          this.pathT = 0.1;
+          this.aimParams = this.shotParams(this.chargeValue(), c.curl, c.aim, this.shiftHeld());
+          try { this.aimPath = this.aimParams ? this.engine.predictKick(this.aimParams, 1.4) : []; } catch { this.aimPath = []; }
         }
       }
     }
+
+    // F held without the ball while running: ask for a through ball into the space ahead
+    const owner = this.owner();
+    if (this.passHeld >= 0 && !this.hasBall() && dir && owner && owner.side === 'us' && clock - this.passHeld > THROUGH_HOLD) {
+      this.throughCallT -= dt;
+      if (this.throughCallT <= 0) { this.throughCallT = 0.45; this.send({ kind: 'callForBall', through: true }); }
+    } else this.throughCallT = 0;
 
     // holding SHOOT / PASS without the ball arms a one-touch strike when a loose ball comes near
     if (!this.charge && !this.armed && !this.hasBall() && !this.state.ball.ownerId) {
@@ -426,9 +497,7 @@ export class Controls {
 
     // queued tackle: close in on the carrier, then go in
     if (this.tackleQ) {
-      const s = this.state;
       const u = this.user();
-      const owner = s.ball.ownerId ? s.players.find((p) => p.id === s.ball.ownerId) : null;
       if (!u || !owner || owner.side !== 'them' || this.clock > this.tackleQ.until) this.tackleQ = null;
       else {
         const dd = Math.hypot(owner.pos.x - u.pos.x, owner.pos.y - u.pos.y);
@@ -441,31 +510,31 @@ export class Controls {
     this.pickT -= dt;
     if (this.pickT <= 0) {
       this.pickT = 0.15;
-      this.pick = info.hasBall && info.setPiece !== 'penalty' ? pickPass(this.engine, { pref: dir, toward: this.mouseActive() ? this.mouse.world : null }) : null;
+      this.pick = info.hasBall && info.setPiece !== 'penalty'
+        ? pickPass(this.engine, { pref: dir ?? kickDir(this.engine, null), toward: this.mouseActive() ? this.mouse.world : null, cone: PASS_CONE })
+        : null;
     }
   }
 
   overlay(): ControlsOverlay {
     const info = assistInfo(this.engine, this.offset);
-    const s = this.state;
-    const owner = s.ball.ownerId ? s.players.find((p) => p.id === s.ball.ownerId) : null;
-    const mode: ControlsOverlay['mode'] = info.setPiece === 'corner' ? 'corner' : info.setPiece ? 'setPiece'
+    const owner = this.owner();
+    const mode: ControlsMode = info.setPiece === 'corner' ? 'corner' : info.setPiece ? 'setPiece'
       : info.hasBall ? 'attack' : owner?.side === 'them' || this.engine.setup.type === 'defend' ? 'defend' : 'noBall';
     const c = this.charge;
-    const aimPoint = this.mouseActive() ? this.mouse.world : null;
     return {
-      charge: c ? { value: this.chargeValue(), curl: this.intentCurl(), chip: this.shiftHeld(), params: this.aimParams, path: this.aimPath } : null,
+      charge: c ? { value: this.chargeValue(), curl: c.curl, chip: this.shiftHeld(), params: this.aimParams, path: this.aimPath } : null,
       pass: this.pick,
       info,
       mode,
-      aimPoint,
+      aimPoint: this.mouseActive() ? this.mouse.world : null,
       touch: this.touchMode,
     };
   }
 
   setChipHeld(v: boolean): void { this.chipHeld = v; }
 
-  hint(mode: ControlsOverlay['mode']): string {
+  hint(mode: ControlsMode): string {
     if (this.touchMode) return t('v2d.hint.touch');
     return t(`v2d.hint.${mode}`);
   }

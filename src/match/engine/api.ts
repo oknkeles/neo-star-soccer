@@ -50,6 +50,11 @@ export interface MomentEngine {
    * The view shows only the first part of it (length scales with the user's vision).
    */
   predictKick(params: KickParams, maxTime?: number): Vec3[];
+  /**
+   * Simulated seconds accumulated but not yet stepped (0..1/120). Optional: views extrapolate
+   * rendered positions by it (pos + vel·lag) so motion stays smooth between fixed steps.
+   */
+  readonly lag?: number;
   /** Is the user currently able to kick (has the ball, or ball is within reach for a one-touch volley/header)? */
   canKick(): boolean;
   /** Subscribe to events (audio, commentary, camera). Returns unsubscribe. */
@@ -87,5 +92,5 @@ export function autoResolve(setup: MomentSetup, rng: Rng): MomentResult {
  * Casual-play control assists (used by the 2D view): automatic aim for shots, best team-mate
  * selection for passes / through balls, and a cheap info snapshot for the aim UI.
  */
-export { assistShot, assistPass, pickPass, assistInfo } from './assist';
-export type { ShotIntent, PassIntent, PassPick, AssistInfo } from './assist';
+export { assistShot, assistShotDir, assistPass, pickPass, assistInfo, kickDir, goalBound, GOAL_CONE } from './assist';
+export type { ShotIntent, DirShotIntent, PassIntent, PassPick, AssistInfo } from './assist';

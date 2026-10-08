@@ -137,7 +137,7 @@ export function readFlag(key: string): boolean {
 export function writeFlag(key: string): void {
   try { if (typeof localStorage !== 'undefined') localStorage.setItem(key, '1'); } catch { /* private mode */ }
 }
-export const HELP_FLAG = 'nss.momentHelp.v2';
+export const HELP_FLAG = 'nss.momentHelp.v3';
 
 /** Can this browser create a WebGL context? */
 export function hasWebGL(): boolean {

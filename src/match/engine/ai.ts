@@ -186,10 +186,20 @@ function attackOffBall(e: Engine, a: Agent): void {
     if (owner && owner.side === a.side && isForward(a) && !owner.isGK) {
       const u = a.st.pos.x * dir;
       const ownerU = owner.st.pos.x * dir;
-      if (u < line - 0.4 && ownerU > -25 && line < HL - 12 && e.rng.chance(0.035)) {
+      if (u < line - 0.4 && ownerU > -25 && line < HL - 12 && e.rng.chance(0.035 + (owner.isUser ? 0.035 * e.ease : 0))) {
         a.runT = 2.4;
         a.runTarget = { x: dir * Math.min(line + 10, HL - 8), y: clamp(a.st.pos.y * 0.75 + e.rng.float(-4, 4), -22, 22) };
       }
+    }
+    // casual play: midfielders / full-backs show for the user's pass (an angled option either side)
+    if (owner && owner.isUser && e.ease > 0 && !isForward(a) && a.slot.role !== 'CB') {
+      const side = Math.sign(a.st.pos.y - owner.st.pos.y) || (a.i % 2 ? 1 : -1);
+      const sx = owner.st.pos.x + dir * (a.slot.role === 'FB' ? -3 : 6);
+      const sy = owner.st.pos.y + side * (a.slot.role === 'FB' ? 14 : 10);
+      const w = 0.65 * e.ease;
+      tx += (sx - tx) * w;
+      ty += (sy - ty) * w;
+      urg = Math.max(urg, 0.7);
     }
     // stay onside
     if (tx * dir > line - 0.6) tx = dir * (line - 0.6);
@@ -245,14 +255,16 @@ function defendOffBall(e: Engine, a: Agent, pressers: Agent[] | null, marks: Map
     const close = pressers[0] === a ? 0.9 : 3.5;
     const target = { x: c.st.pos.x + (gx / gl) * close, y: c.st.pos.y + (gy / gl) * close };
     const diff = clamp(e.setup.difficulty, 0, 1);
-    let urg = a.side === 'them' ? (0.8 + 0.2 * diff) * (1 - 0.16 * e.ease) : 0.9;
-    if (d > 8) urg = a.side === 'them' ? 1 - 0.12 * e.ease : 1;
+    // casual play: opponents close the user down more slowly
+    const soft = c.isUser ? 0.3 : 0.16;
+    let urg = a.side === 'them' ? (0.8 + 0.2 * diff) * (1 - soft * e.ease) : 0.9;
+    if (d > 8) urg = a.side === 'them' ? 1 - (c.isUser ? 0.22 : 0.12) * e.ease : 1;
     goTo(a, target, urg, 'press');
     // tackle attempts
     const bd = hyp(s.ball.pos.x - a.st.pos.x, s.ball.pos.y - a.st.pos.y);
     if (pressers[0] === a && bd < 1.3 && a.cool <= 0 && a.stun <= 0 && e.state.phase !== 'outcome') {
       let rate = 0.12 + 0.18 * (a.a.tackling / 99);
-      if (a.side === 'them') rate *= (0.75 + 0.6 * diff) * (1 - 0.5 * e.ease);
+      if (a.side === 'them') rate *= (0.75 + 0.6 * diff) * (1 - 0.5 * e.ease) * (c.isUser ? 1 - 0.5 * e.ease : 1);
       if (a.side === 'us' && e.attackSide === 'them') rate *= 0.45;
       if (c.isGK) rate = 0;
       if (e.rng.chance(rate)) e.tryTackle(a, e.rng.chance(0.12));
@@ -301,6 +313,8 @@ export interface PassOption {
   lofted: boolean;
   dist: number;
   risk: number;
+  /** The receiver would be offside (only ever offered for the user). */
+  offside: boolean;
 }
 
 /** Lane risk: how many opponents can step into the pass before it passes them. */
@@ -329,18 +343,20 @@ export function passOptions(e: Engine, a: Agent): PassOption[] {
   for (const m of e.agents) {
     if (m.side !== a.side || m === a || m.passive || m.stun > 0) continue;
     if (m.isGK && from.x * dir > -25) continue;
-    let at: Vec2 = { x: m.st.pos.x + m.st.vel.x * 0.45, y: m.st.pos.y + m.st.vel.y * 0.45 };
     const userCall = m.isUser && s.time < e.ctl.callUntil;
+    // lead the receiver into his run (the user a little more: he is moving to meet it)
+    const lead0 = m.isUser ? clamp(0.3 + hyp(m.st.pos.x - from.x, m.st.pos.y - from.y) / 24, 0.4, 1.1) : 0.45;
+    let at: Vec2 = { x: m.st.pos.x + m.st.vel.x * lead0, y: m.st.pos.y + m.st.vel.y * lead0 };
     if (m.runT > 0 || (userCall && e.ctl.callThrough)) {
       const sp = hyp(m.st.vel.x, m.st.vel.y);
-      const lead = userCall && e.ctl.callThrough ? 6 : Math.min(8, sp * 0.9);
+      const lead = userCall && e.ctl.callThrough ? clamp(5 + sp * 0.5, 6, 9) : Math.min(8, sp * 0.9);
       const ux = sp > 0.5 ? m.st.vel.x / sp : dir;
       const uy = sp > 0.5 ? m.st.vel.y / sp : 0;
       at = { x: m.st.pos.x + ux * lead, y: m.st.pos.y + uy * lead };
     }
     at = { x: clamp(at.x, -HL + 1, HL - 1.5), y: clamp(at.y, -HW + 1, HW - 1) };
     const dist = hyp(at.x - from.x, at.y - from.y);
-    if (dist < 4.5 || dist > 42) continue;
+    if (dist < (m.isUser ? 3.5 : 4.5) || dist > 42) continue;
     // AI rarely plays a team-mate offside
     const offside = m.st.pos.x * dir > line + 0.2 && m.st.pos.x * dir > from.x * dir && m.st.pos.x * dir > 0;
     if (offside && !m.isUser) continue;
@@ -361,7 +377,7 @@ export function passOptions(e: Engine, a: Agent): PassOption[] {
       const lv = value + (risk - lr) * 0.9 - 0.25;
       if (lv > value) { value = lv; lofted = true; }
     }
-    out.push({ to: m, at, value, lofted, dist, risk });
+    out.push({ to: m, at, value, lofted, dist, risk, offside });
   }
   out.sort((p, q) => q.value - p.value);
   return out;
@@ -405,6 +421,16 @@ export function carrierThink(e: Engine, a: Agent): void {
   const dGoal = distToGoal(pos, dir);
   const settle = a.carryT < 0.28 && pressure < 0.6 && dGoal > 14;
   const vision = clamp(a.a.vision, 1, 99) / 99;
+
+  // casual play: the user called for it → give it to him at once unless the lane is shut
+  if (a.side === e.user.side && s.time < e.ctl.callUntil && e.ease > 0.15 && !e.user.passive && e.user.stun <= 0) {
+    const opt = passOptions(e, a).find((o) => o.to.isUser);
+    const maxRisk = 1.4 + 1.2 * e.ease;
+    if (opt && !opt.offside && (opt.lofted || opt.risk < maxRisk)) {
+      e.execKick(a, passParams(e, a, opt), { target: opt.to.i, isShot: false });
+      return;
+    }
+  }
 
   // ── shoot? ──
   let shootV = -Infinity;

@@ -7,6 +7,8 @@ import { setLang } from './i18n';
  * request to api.anthropic.com.
  */
 const KEY = 'nss.settings.v1';
+/** Bump to migrate stored settings once (see load()). */
+const VERSION = 2;
 
 export const AI_MODELS = [
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
@@ -25,13 +27,14 @@ export function defaultSettings(): Settings {
       model: 'claude-opus-5-5',
       features: Object.fromEntries(ALL_FEATURES.map((f) => [f, true])) as Record<AIFeature, boolean>,
     },
-    graphics: { quality: 'high', shadows: true },
+    graphics: { quality: 'medium', shadows: true },
     audio: { master: 0.8, sfx: 0.9, crowd: 0.7, muted: false },
     camera: 'behind',
     difficulty: 'easy',
     slowmoAim: false,
-    matchSpeed: 1,
-    matchView: '2d',
+    matchSpeed: 2,
+    matchView: '3d',
+    version: VERSION,
   };
 }
 
@@ -49,6 +52,14 @@ function load(): Settings {
       if (parsed.difficulty === 'normal') parsed.difficulty = 'easy';
       parsed.slowmoAim = false;
     }
+    if ((parsed.version ?? 0) < 2) {
+      // v2: back to the 3D view by default (2D stays selectable), smoother defaults, brisker ticker
+      if (parsed.matchView === '2d' || parsed.matchView === undefined) parsed.matchView = '3d';
+      if (parsed.graphics?.quality === 'high') parsed.graphics = { ...parsed.graphics, quality: 'medium' };
+      if (parsed.matchSpeed === undefined || parsed.matchSpeed === 1) parsed.matchSpeed = 2;
+      parsed.slowmoAim = false;
+    }
+    parsed.version = VERSION;
     return {
       ...base,
       ...parsed,

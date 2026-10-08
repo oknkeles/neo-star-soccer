@@ -122,7 +122,7 @@ export interface UserMarker {
 }
 
 /** Glowing ring under the user's player (brighter + spinning arcs when he has the ball). */
-export function buildUserMarker(): UserMarker {
+export function buildUserMarker(rgb = '184,255,60', size = 1.9): UserMarker {
   const group = new THREE.Group();
   const c = document.createElement('canvas');
   c.width = c.height = 256;
@@ -130,10 +130,10 @@ export function buildUserMarker(): UserMarker {
   if (g) {
     const cx = 128;
     const grad = g.createRadialGradient(cx, cx, 70, cx, cx, 126);
-    grad.addColorStop(0, 'rgba(184,255,60,0)');
-    grad.addColorStop(0.55, 'rgba(184,255,60,0.95)');
-    grad.addColorStop(0.7, 'rgba(184,255,60,0.35)');
-    grad.addColorStop(1, 'rgba(184,255,60,0)');
+    grad.addColorStop(0, `rgba(${rgb},0)`);
+    grad.addColorStop(0.55, `rgba(${rgb},0.95)`);
+    grad.addColorStop(0.7, `rgba(${rgb},0.35)`);
+    grad.addColorStop(1, `rgba(${rgb},0)`);
     g.fillStyle = grad;
     g.fillRect(0, 0, 256, 256);
     g.strokeStyle = 'rgba(255,255,255,0.9)';
@@ -147,7 +147,7 @@ export function buildUserMarker(): UserMarker {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-  const geo = new THREE.PlaneGeometry(1.9, 1.9);
+  const geo = new THREE.PlaneGeometry(size, size);
   const ring = new THREE.Mesh(geo, mat);
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.03;

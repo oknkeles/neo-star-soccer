@@ -61,11 +61,11 @@ export function desiredFraming(i: FramingInput): Framing {
         const dx = vx * 0.45 + 0.55;
         const dy = vy * 0.45;
         const dl = Math.hypot(dx, dy) || 1;
-        const back = 9.5;
+        const back = 15;
         return {
-          pos: { x: bx - (dx / dl) * back, y: by - (dy / dl) * back * 0.9, z: 3.4 + i.ball.z * 0.55 },
-          target: { x: Math.min(bx + (dx / dl) * 9, HL + 4), y: by + (dy / dl) * 7, z: 0.8 + i.ball.z * 0.6 },
-          fov: portrait ? 64 : 50,
+          pos: { x: bx - (dx / dl) * back, y: by - (dy / dl) * back * 0.9, z: 7.5 + i.ball.z * 0.4 },
+          target: { x: Math.min(bx + (dx / dl) * 12, HL + 4), y: by + (dy / dl) * 8, z: 0.6 + i.ball.z * 0.5 },
+          fov: portrait ? 66 : 54,
         };
       }
       // Frame the user with a pull toward the ball (limited so the ball never drags the shot away).
@@ -78,16 +78,17 @@ export function desiredFraming(i: FramingInput): Framing {
       oy *= pull;
       const fx = u.x + ox;
       const fy = u.y + oy;
-      const back = i.aiming ? 8.5 : portrait ? 14 : 12;
-      const height = i.aiming ? 4.4 : portrait ? 7.6 : 6.2;
-      const ahead = i.aiming ? 16 : 15;
+      // a little higher and wider than a pure "over the shoulder" shot: team-mates and the goal stay in view
+      const back = i.aiming ? 12 : portrait ? 18 : 15.5;
+      const height = i.aiming ? 7 : portrait ? 10.5 : 8.6;
+      const ahead = i.aiming ? 17 : 18;
       // A ball behind the user (defending toward our goal) pulls the camera back so both stay in shot.
       const behindBy = Math.max(0, u.x - bx - 2);
       const camX = fx - back - Math.min(28, behindBy * 0.9);
       return {
         pos: { x: camX, y: fy * 0.9, z: height + Math.min(6, behindBy * 0.2) },
         target: { x: Math.min(fx + ahead - Math.min(ahead, behindBy * 0.8), HL + 3), y: fy * 0.94, z: i.aiming ? 1.0 : 0.4 },
-        fov: i.aiming ? (portrait ? 62 : 48) : (portrait ? 66 : 52),
+        fov: i.aiming ? (portrait ? 64 : 52) : (portrait ? 68 : 56),
       };
     }
   }

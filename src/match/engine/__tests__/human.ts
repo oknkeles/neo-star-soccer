@@ -1,12 +1,16 @@
-/** Simulated "human" for play-tests of the casual control assists (2D view keyboard scheme). */
+/** Simulated "human" for play-tests of the casual control assists (shared 3D / 2D keyboard scheme). */
 import type { MomentEvent, MomentResult, MomentType } from '../../../core/types';
-import { assistInfo, assistPass, assistShot, createMoment, type MomentEngine } from '../api';
+import { assistInfo, assistPass, assistShot, assistShotDir, createMoment, type MomentEngine } from '../api';
 import { HL } from '../constants';
 import { makeSetup } from './helpers';
 
 const STEP = 1 / 60;
 
-export interface Human { shootAt: number; holdFor: number; passFirst?: boolean; holdShoot?: boolean }
+export interface Human {
+  shootAt: number; holdFor: number; passFirst?: boolean; holdShoot?: boolean;
+  /** Old auto-aim (corner away from the keeper) instead of shooting where he runs. */
+  autoAim?: boolean;
+}
 
 export function humanPlay(type: MomentType, seed: number, difficulty: number, h: Human): { r: MomentResult | null; events: MomentEvent[] } {
   const e: MomentEngine = createMoment(makeSetup(type, { seed, difficulty, timeLimit: 16 }));
@@ -22,7 +26,7 @@ export function humanPlay(type: MomentType, seed: number, difficulty: number, h:
     if (s.phase !== 'intro') {
       if (hasBall || e.canKick()) {
         if (h.passFirst && !passed) {
-          const p = assistPass(e, { pref: { x: 1, y: 0 } });
+          const p = assistPass(e, { pref: { x: 1, y: 0 }, cone: (50 * Math.PI) / 180 });
           if (p) { e.input({ kind: 'kick', params: p }); passed = true; }
         } else {
           const dx = HL - 9 - u.pos.x;
@@ -35,7 +39,9 @@ export function humanPlay(type: MomentType, seed: number, difficulty: number, h:
           if (chargeT >= 0) {
             chargeT += STEP;
             if (chargeT >= h.holdFor) {
-              const p = assistShot(e, { charge: Math.min(1, chargeT / 0.8), curl: 0 });
+              const charge = Math.min(1, chargeT / 0.6);
+              // the scheme: SPACE strikes where he is running (here: at the goal area)
+              const p = h.autoAim ? assistShot(e, { charge, curl: 0 }) : assistShotDir(e, { charge, curl: 0, dir: { x: dx / l, y: dy / l } });
               if (p) e.input({ kind: 'kick', params: p });
               chargeT = -1;
             }
@@ -48,7 +54,7 @@ export function humanPlay(type: MomentType, seed: number, difficulty: number, h:
         const d = Math.hypot(dx, dy) || 1;
         const closing = (s.ball.vel.x * dx + s.ball.vel.y * dy) / d - (u.vel.x * dx + u.vel.y * dy) / d;
         if (!struck && (e.canKick() || (d < 2.6 && closing > 2 && d / closing < 0.3))) {
-          const p = assistShot(e, { charge: 0.75, curl: 0 });
+          const p = assistShotDir(e, { charge: 0.75, curl: 0, dir: { x: 1, y: -s.ball.pos.y * 0.04 } });
           if (p) { e.input({ kind: 'kick', params: p }); struck = true; }
         }
       } else {

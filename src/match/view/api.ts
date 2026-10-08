@@ -3,14 +3,9 @@
  * Owns the requestAnimationFrame loop for a moment: reads engine.state, calls
  * engine.step(dt) and engine.input(cmd). Owner: view agent.
  *
- * Controls (mouse, touch and keyboard):
- *  - Tap/click on the pitch: run there (dribble if you have the ball). WASD/arrows also move; Shift sprints.
- *  - Press on/near the ball and drag OUT in the direction you want to kick: drag length = power,
- *    the SIDEWAYS bend of the drawn path = curl (falso), loft from the on-screen loft slider
- *    (mouse wheel / Q-E keys). While aiming time slows (focus meter). A predicted path is drawn
- *    (its length depends on vision). Release = kick. Swiping sideways right after release = aftertouch.
- *  - Space / "PAS!" button: call for the ball; double-tap ahead of yourself: call for a through ball.
- *  - Defending: tap near the ball carrier when close = tackle; double-tap = slide tackle.
+ * Controls: the shared assisted scheme in src/match/controls/controls.ts (WASD camera-relative
+ * run, SPACE = shot where you run, F = pass / call for the ball, R through ball, Q/E curl,
+ * touch joystick + ŞUT / PAS). No slow motion. V cycles the camera, H shows the controls.
  */
 import type { CameraMode, Kit, MomentEvent, MomentSetup, ReplayFrame } from '../../core/types';
 import type { MomentEngine } from '../engine/api';

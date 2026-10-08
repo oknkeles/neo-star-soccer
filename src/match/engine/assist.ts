@@ -34,6 +34,21 @@ export interface PassIntent {
   toward?: Vec2 | null;
   /** Through ball into space ahead of the most advanced team-mate. */
   through?: boolean;
+  /** Only team-mates within this angle (rad) of `pref`; falls back to the most open one ahead. */
+  cone?: number;
+}
+
+export interface DirShotIntent {
+  /** 0..1 how long the button was held (power). */
+  charge: number;
+  /** −1..1 user curl (Q / E); 0 = automatic. */
+  curl: number;
+  /** World direction the user is running (keys / stick); null = the way he faces. */
+  dir?: Vec2 | null;
+  /** Set pieces: −1..1 manual target offset along the goal line. */
+  offset?: number;
+  /** Chip over an advancing keeper. */
+  chip?: boolean;
 }
 
 export interface PassPick {
@@ -203,9 +218,92 @@ export function assistShot(engine: MomentEngine, intent: ShotIntent): KickParams
     return shotAt(e, ty * 0.7, 1.9, power, 0, 'ground', 0.5);
   }
   const power = clamp(0.74 + 0.23 * charge, 0.3, 0.97);
-  const curl = Math.abs(userCurl) > 0.05 ? userCurl * 0.9 : dist > 13 && kind === 'ground' ? -0.22 * Math.sign(ty) : 0;
+  const curl = Math.abs(userCurl) > 0.05 ? userCurl * 0.9 : autoCurl(e, ty, kind);
   const tz = kind === 'volley' ? 0.5 : dist < 12 ? 0.35 : 0.6;
   return shotAt(e, ty, tz, power, curl, kind);
+}
+
+/** A little automatic bend only from wide angles, where it helps keep the shot inside the posts. */
+function autoCurl(e: Engine, ty: number, kind: 'ground' | 'volley' | 'header'): number {
+  const b = e.state.ball.pos;
+  const dist = hyp(HL - b.x, b.y);
+  if (kind !== 'ground' || dist < 12 || Math.abs(b.y) < GW + 4) return 0;
+  return -0.2 * Math.sign(ty || 1);
+}
+
+/** Half-angle (rad) of the cone around the goal within which a run counts as "at goal". */
+export const GOAL_CONE = (35 * Math.PI) / 180;
+
+/** Unit direction for a direction-based kick: the given one, else the way the user faces / runs. */
+export function kickDir(engine: MomentEngine, dir?: Vec2 | null): Vec2 {
+  if (dir) {
+    const l = hyp(dir.x, dir.y);
+    if (l > 0.05) return { x: dir.x / l, y: dir.y / l };
+  }
+  const u = engine.state.players.find((p) => p.isUser);
+  if (!u) return { x: 1, y: 0 };
+  const sp = hyp(u.vel.x, u.vel.y);
+  if (sp > 1.2) return { x: u.vel.x / sp, y: u.vel.y / sp };
+  return { x: Math.cos(u.facing), y: Math.sin(u.facing) };
+}
+
+/** Is a kick in direction `d` from the ball "at goal" (within GOAL_CONE of the goal mouth, in range)? */
+export function goalBound(engine: MomentEngine, d: Vec2): boolean {
+  const b = engine.state.ball.pos;
+  const gx = HL - b.x;
+  const gy = -b.y;
+  const dist = hyp(gx, gy);
+  if (dist > 36 || gx < 0.5) return false;
+  let da = Math.atan2(d.y, d.x) - Math.atan2(gy, gx);
+  while (da > Math.PI) da -= Math.PI * 2;
+  while (da < -Math.PI) da += Math.PI * 2;
+  return Math.abs(da) <= GOAL_CONE + Math.atan2(GW, dist) * 0.5;
+}
+
+/** Corner for a run at goal: the side the run points to, unless the keeper covers it. */
+function cornerFor(e: Engine, d: Vec2): number {
+  const m = inner(e);
+  const b = e.state.ball.pos;
+  if (d.x < 0.05) return autoTargetY(e);
+  const yc = clamp(b.y + (d.y * (HL - b.x)) / d.x, -(GW + 3), GW + 3);
+  const gk = e.gkThem;
+  const ky = gk ? gk.st.pos.y : 0;
+  const cost = (c: number) => Math.abs(c - yc) * 0.35 - Math.min(3.5, Math.abs(c - ky));
+  return cost(m) <= cost(-m) ? m : -m;
+}
+
+/**
+ * SHOOT in the direction the user is running (keyboard / stick scheme): runs roughly at goal
+ * (within GOAL_CONE) get a gentle aim assist into the goal mouth, away from the keeper;
+ * anything else is struck exactly where he is running. Set pieces keep their target picking.
+ */
+export function assistShotDir(engine: MomentEngine, intent: DirShotIntent): KickParams | null {
+  const e = asEngine(engine);
+  const charge = clamp(Number.isFinite(intent.charge) ? intent.charge : 0.5, 0, 1);
+  const userCurl = clamp(Number.isFinite(intent.curl) ? intent.curl : 0, -1, 1);
+  const d = kickDir(engine, intent.dir);
+  if (!e) return { dir: d, power: 0.55 + 0.4 * charge, loft: 0.08, curl: userCurl };
+  const set = e.frozen && e.owner === e.user ? e.setPiece : null;
+  if (set) return assistShot(engine, { charge, curl: userCurl, offset: intent.offset, chip: intent.chip });
+  const kind = kindFor(e);
+  const b = e.state.ball.pos;
+  const dist = hyp(HL - b.x, b.y);
+  if (goalBound(engine, d)) {
+    const ty = cornerFor(e, d);
+    if (kind === 'header') return shotAt(e, ty * 0.92, 0.4, 0.95, 0, 'header');
+    const gk = e.gkThem;
+    const gkOff = gk ? HL - gk.st.pos.x : 0;
+    if (intent.chip && kind === 'ground' && gkOff > 4.5 && dist < 30) {
+      return shotAt(e, ty * 0.7, 1.9, clamp(0.3 + dist * 0.014, 0.38, 0.78), 0, 'ground', 0.5);
+    }
+    const power = clamp(0.76 + 0.21 * charge, 0.3, 0.97);
+    const curl = Math.abs(userCurl) > 0.05 ? userCurl * 0.9 : autoCurl(e, ty, kind);
+    const tz = kind === 'volley' ? 0.5 : dist < 12 ? 0.35 : 0.6;
+    return shotAt(e, ty, tz, power, curl, kind);
+  }
+  // exactly where he is running: a driven ball (lofted when fully charged)
+  if (kind === 'header') return { dir: d, power: 0.85, loft: 0.25, curl: 0 };
+  return { dir: d, power: clamp(0.45 + 0.5 * charge, 0.3, 0.97), loft: charge > 0.8 ? 0.24 : kind === 'volley' ? 0.1 : 0.05, curl: userCurl * 0.9 };
 }
 
 function prefDir(e: Engine, intent: PassIntent): Vec2 {
@@ -259,6 +357,7 @@ export function pickPass(engine: MomentEngine, intent: PassIntent): PassPick | n
   const b = e.state.ball.pos;
   const pd = prefDir(e, intent);
   const opts = passOptions(e, u);
+  const minCos = intent.cone ? Math.cos(intent.cone) : -2;
   let best: (typeof opts)[number] | null = null;
   let bestV = -Infinity;
   for (const o of opts) {
@@ -266,9 +365,18 @@ export function pickPass(engine: MomentEngine, intent: PassIntent): PassPick | n
     const dy = o.at.y - b.y;
     const d = hyp(dx, dy) || 1;
     const cos = (dx * pd.x + dy * pd.y) / d;
-    let v = o.value * 0.6 - o.risk * (o.lofted ? 0.3 : 0.7) + cos * 1.3 - (cos < -0.2 ? 2 : 0) - Math.abs(d - 16) * 0.015;
+    if (cos < minCos) continue;
+    let v = o.value * 0.6 - o.risk * (o.lofted ? 0.3 : 0.7) + cos * (intent.cone ? 1.8 : 1.3) - (cos < -0.2 ? 2 : 0) - Math.abs(d - 16) * 0.015;
     if (intent.toward) v -= hyp(o.at.x - intent.toward.x, o.at.y - intent.toward.y) * 0.12;
     if (v > bestV) { bestV = v; best = o; }
+  }
+  if (!best && intent.cone) {
+    // nobody that way: the most open team-mate ahead (else anyone)
+    for (const o of opts) {
+      const ahead = o.at.x > b.x - 3;
+      const v = (ahead ? 2 : 0) + clamp(e.nearestOpp(o.to, o.at).d, 0, 10) * 0.25 - o.risk * 0.6 + o.value * 0.2;
+      if (v > bestV) { bestV = v; best = o; }
+    }
   }
   if (!best) return null;
   return { id: best.to.id, at: best.at, lofted: best.lofted || best.dist > 30 || (best.risk > 0.6 && best.dist > 12) };

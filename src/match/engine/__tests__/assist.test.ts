@@ -1,9 +1,12 @@
 /**
  * Play-tests of the casual control assists: a simple "human" holds a direction toward goal,
- * presses SHOOT (≈0.4 s charge) or PASS, exactly like the 2D view's keyboard controls.
+ * presses SHOOT (≈0.4 s charge) or PASS, exactly like the shared keyboard controls.
  */
 import { describe, expect, it } from 'vitest';
-import type { MomentType } from '../../../core/types';
+import type { MomentEvent, MomentType } from '../../../core/types';
+import { assistPass, assistShotDir, createMoment, goalBound } from '../api';
+import { HL } from '../constants';
+import { makeSetup } from './helpers';
 import { humanPlay, humanRate } from './human';
 
 describe('assisted controls play-test', () => {
@@ -52,5 +55,72 @@ describe('assisted controls play-test', () => {
     console.log('pass completion', ok, '/', n);
     expect(n).toBeGreaterThan(20);
     expect(ok / n).toBeGreaterThanOrEqual(0.75);
+  }, 60000);
+});
+
+describe('direction-based controls (shoot where you run, F = pass / call)', () => {
+  it('a run at goal snaps into the goal mouth; a run elsewhere is struck exactly that way', () => {
+    const e = createMoment(makeSetup('one_on_one', { seed: 3, difficulty: 0.3 }));
+    for (let i = 0; i < 90; i++) e.step(1 / 60);
+    const b = e.state.ball.pos;
+    const toGoal = { x: HL - b.x, y: -b.y };
+    const l = Math.hypot(toGoal.x, toGoal.y);
+    const at = { x: toGoal.x / l, y: toGoal.y / l };
+    expect(goalBound(e, at)).toBe(true);
+    const shot = assistShotDir(e, { charge: 0.5, curl: 0, dir: at })!;
+    const path = e.predictKick(shot, 3);
+    const cross = path.find((p) => p.x >= HL - 0.05);
+    expect(cross).toBeTruthy();
+    expect(Math.abs(cross!.y)).toBeLessThan(3.66);
+    // sideways: no aim assist, the ball goes exactly where he runs
+    const side = { x: 0, y: 1 };
+    expect(goalBound(e, side)).toBe(false);
+    const p2 = assistShotDir(e, { charge: 0.3, curl: 0, dir: side })!;
+    expect(p2.dir.x).toBeCloseTo(0, 5);
+    expect(p2.dir.y).toBeCloseTo(1, 5);
+  });
+
+  it('F without the ball: a team-mate passes straight to the user (easy and normal)', () => {
+    for (const diff of [0.3, 0.5]) {
+      let n = 0;
+      let ok = 0;
+      let slow = 0;
+      for (const type of ['build_up', 'open_play', 'counter'] as MomentType[]) {
+        for (let seed = 1; seed <= 12; seed++) {
+          const e = createMoment(makeSetup(type, { seed, difficulty: diff, timeLimit: 16 }));
+          const evs: { t: number; ev: MomentEvent }[] = [];
+          e.on((ev) => evs.push({ t: e.state.time, ev }));
+          let calledAt = -1;
+          let mate = '';
+          for (let f = 0; f < 60 * 14 && !e.isFinished(); f++) {
+            const s = e.state;
+            const u = s.players.find((p) => p.isUser)!;
+            if (s.phase !== 'intro' && calledAt < 0) {
+              if (s.ball.ownerId === u.id) {
+                const p = assistPass(e, { pref: { x: 1, y: 0 }, cone: (50 * Math.PI) / 180 });
+                if (p) e.input({ kind: 'kick', params: p });
+              } else {
+                const o = s.players.find((p) => p.id === s.ball.ownerId);
+                if (o && o.side === 'us' && !o.isUser && o.role !== 'GK' && Math.hypot(o.pos.x - u.pos.x, o.pos.y - u.pos.y) < 30) {
+                  e.input({ kind: 'callForBall', through: false });
+                  calledAt = s.time;
+                  mate = o.id;
+                }
+              }
+            }
+            e.step(1 / 60);
+            if (calledAt >= 0 && s.time - calledAt > 1.5) break;
+          }
+          if (calledAt < 0) continue;
+          n++;
+          const kick = evs.find((x) => x.t >= calledAt && x.ev.t === 'kick' && x.ev.by === mate);
+          if (kick) { ok++; if (kick.t - calledAt > 0.3) slow++; }
+        }
+      }
+      console.log('call for the ball', diff, ok, '/', n, 'slow', slow);
+      expect(n).toBeGreaterThan(10);
+      expect(ok / n).toBeGreaterThanOrEqual(0.8);
+      expect(slow).toBeLessThanOrEqual(Math.ceil(n * 0.1));
+    }
   }, 60000);
 });

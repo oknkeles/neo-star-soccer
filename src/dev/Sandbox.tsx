@@ -1,6 +1,6 @@
 /**
  * Developer sandbox (open the app with #sandbox). Owner: view agent.
- * Mounts a moment in the 2D (default) or 3D view with every moment type, difficulty, weather,
+ * Mounts a moment in the 3D (default) or 2D view with every moment type, difficulty, weather,
  * camera / zoom and quality combination, playable with the keyboard. Uses the real engine
  * when it works and falls back to a small mock engine. Hash params: type, v=2d|3d, diff=easy|normal|hard,
  * kind, time, cam, q, shadows, help, panel. `window.__sandbox` exposes { engine, handle } for debugging.
@@ -38,12 +38,12 @@ export default function Sandbox() {
   const handle = useRef<MomentViewHandle | null>(null);
   const h = readHash();
   const [type, setType] = useState<MomentType>((h.type as MomentType) ?? 'one_on_one');
-  const [view, setView] = useState<(typeof VIEWS)[number]>(h.v === '3d' ? '3d' : '2d');
+  const [view, setView] = useState<(typeof VIEWS)[number]>(h.v === '2d' ? '2d' : '3d');
   const [diff, setDiff] = useState<(typeof DIFFS)[number]>((DIFFS as readonly string[]).includes(h.diff) ? (h.diff as 'easy') : 'easy');
   const [kind, setKind] = useState<Weather['kind']>((h.kind as Weather['kind']) ?? 'clear');
   const [time, setTime] = useState<Weather['time']>((h.time as Weather['time']) ?? 'night');
   const [cam, setCam] = useState<CameraMode>((h.cam as CameraMode) ?? 'behind');
-  const [quality, setQuality] = useState<(typeof QUALITIES)[number]>((h.q as 'low') ?? 'high');
+  const [quality, setQuality] = useState<(typeof QUALITIES)[number]>((h.q as 'low') ?? 'medium');
   const [shadows, setShadows] = useState(h.shadows !== '0');
   const [backdrop, setBackdrop] = useState(h.backdrop === '1');
   const [help, setHelp] = useState(h.help === '1');

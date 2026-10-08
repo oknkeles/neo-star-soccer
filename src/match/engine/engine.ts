@@ -104,6 +104,8 @@ export class Engine {
   drill: { attempt: number; attempts: number; score: number; resolveAt: number; kicked: boolean; best: number[] } | null = null;
   private listeners: ((e: MomentEvent) => void)[] = [];
   private acc = 0;
+  /** Simulated seconds not yet stepped (0..DT): views extrapolate positions by it for smooth motion. */
+  get lag(): number { return this.acc; }
   private replayBuf: ReplayFrame[] = [];
   private replayHead = 0;
   private lastBounceT = -1;
@@ -114,7 +116,8 @@ export class Engine {
     this.rng = new Rng((setup.seed >>> 0) || 1);
     this.env = physEnv(setup.weather);
     this.attackSide = setup.type === 'defend' ? 'them' : 'us';
-    this.ease = clamp((0.62 - clamp(Number.isFinite(setup.difficulty) ? setup.difficulty : 0.5, 0, 1)) / 0.32, 0, 1);
+    // easy (≈0.3) → 1, normal (≈0.5) → 0.5, hard (≥0.7) → 0
+    this.ease = clamp((0.7 - clamp(Number.isFinite(setup.difficulty) ? setup.difficulty : 0.5, 0, 1)) / 0.4, 0, 1);
     this.state = {
       time: 0, timeScale: 1, phase: 'intro', ball: freshBall({ x: 0, y: 0, z: BR }), players: [], focus: 1,
       offsideLineX: null, banner: null, outcome: null,
@@ -260,6 +263,8 @@ export class Engine {
         c.callUntil = s.time + 1.8;
         c.callThrough = !!cmd.through;
         this.log.calledForBall = true;
+        // a team-mate on the ball reacts straight away (he decides in carrierThink)
+        if (this.owner && this.owner.side === this.user.side && !this.owner.isUser) this.owner.think = Math.min(this.owner.think, 0.04);
         break;
       case 'tackle':
         c.tackle = { slide: !!cmd.slide };
@@ -627,7 +632,7 @@ export class Engine {
     const D = (c.a.dribbling * 0.65 + c.a.strength * 0.35) / 99;
     const csp = hyp(c.st.vel.x, c.st.vel.y);
     let pWin = 0.46 + 0.62 * (T - D) + (slide ? 0.1 : 0) - (behind ? 0.18 : 0) - (d > 1.0 ? 0.08 : 0) + (csp > 6 ? 0.04 : 0);
-    if (a.side === 'them') pWin += 0.16 * (this.setup.difficulty - 0.5) - 0.12 * this.ease;
+    if (a.side === 'them') pWin += 0.16 * (this.setup.difficulty - 0.5) - (c.isUser ? 0.22 : 0.12) * this.ease;
     if (a.isUser) pWin += 0.12 * this.ease;
     if (a.side === 'us' && !a.isUser && this.attackSide === 'them') pWin -= 0.1;
     pWin = clamp(pWin, 0.08, 0.9);
@@ -766,7 +771,7 @@ export class Engine {
     const vr = hyp(hyp(rvx, rvy), b.vel.z * 0.6);
     const ft = clamp(a.a.firstTouch, 1, 99) / 99;
     const pr = this.pressureOn(a);
-    const diff = Math.max(0, vr - 4.5) / (9 + 17 * ft) + (b.pos.z > 0.6 ? 0.18 : 0) + pr * 0.12 * (1.2 - ft) + (a.side === 'them' ? 0.05 * (0.5 - this.setup.difficulty) : 0) - (a.isUser ? 0.12 * this.ease : 0)
+    const diff = Math.max(0, vr - 4.5) / (9 + 17 * ft) + (b.pos.z > 0.6 ? 0.18 : 0) + pr * 0.12 * (1.2 - ft) + (a.side === 'them' ? 0.05 * (0.5 - this.setup.difficulty) : 0) - (a.isUser ? 0.1 + 0.16 * this.ease : 0)
       // team-mates meeting the user's pass at speed: a cleaner first touch
       - (a.side === 'us' && !a.isUser && this.lastKick?.user && !this.lastKick.isShot ? 0.12 + 0.2 * this.ease : 0);
     const pClean = clamp(1.03 - diff, 0.1, 0.99);
@@ -952,7 +957,8 @@ export class Engine {
       let ay = dvy - st.vel.y;
       const am = hyp(ax, ay);
       const braking = ax * st.vel.x + ay * st.vel.y < 0;
-      const lim = a.accel * (braking ? 1.7 : 1) * DT;
+      // the user's player answers the controls quickly (no sluggish starts / turns)
+      const lim = a.accel * (braking ? 1.7 : 1) * DT * (a.isUser ? 1.55 + 0.6 * this.ease : 1);
       if (am > lim) { ax *= lim / am; ay *= lim / am; }
       st.vel.x += ax;
       st.vel.y += ay;
@@ -1023,12 +1029,12 @@ export class Engine {
       if (sp > 2.5) {
         const drib = clamp(a.a.dribbling, 1, 99) / 99;
         const pr = this.pressureOn(a);
-        const pHeavy = (Math.max(0, sp / a.topSpeed - 0.62) * (1 - drib) * 1.1 + pr * 0.05 * (1 - drib)) * (a.isUser ? 1 - 0.75 * this.ease : 1);
+        const pHeavy = (Math.max(0, sp / a.topSpeed - 0.62) * (1 - drib) * 1.1 + pr * 0.05 * (1 - drib)) * (a.isUser ? 1 - 0.95 * this.ease : 1);
         if (this.rng.chance(pHeavy)) {
           // heavy touch: the ball runs away from him
           const fx = Math.cos(st.facing);
           const fy = Math.sin(st.facing);
-          const v = sp + 2.6 + 2.2 * this.rng.next();
+          const v = sp + (a.isUser ? 1.2 + 1.4 * (1 - this.ease) : 2.6) + 2.2 * this.rng.next() * (a.isUser ? 0.6 : 1);
           st.hasBall = false;
           this.owner = null;
           b.ownerId = null;
@@ -1195,7 +1201,9 @@ export class Engine {
       }
       let reach = z < 0.75 ? 0.78 : z < 1.6 ? 0.5 : 0;
       // casual play: opponents cut out fewer of the user's passes
-      if (a.side === 'them' && k && k.user && !k.isShot && s.time - k.t < 3) reach *= 1 - 0.35 * this.ease;
+      if (a.side === 'them' && k && k.user && !k.isShot && s.time - k.t < 3) reach *= 1 - 0.62 * this.ease;
+      // ...and fewer of the passes played to him
+      else if (a.side === 'them' && k && !k.isShot && k.side === this.user.side && k.target === this.user.i && s.time - k.t < 3) reach *= 1 - 0.45 * this.ease;
       if (d < reach && d < bestD) { bestD = d; best = a; }
     }
     if (!best) return;
@@ -1244,7 +1252,8 @@ export class Engine {
     s.timeScale = 1;
     if (this.ctl.aiming) { this.ctl.aiming = false; this.emit({ t: 'aim', on: false }); }
     s.banner = banner ?? bannerFor(this, outcome);
-    this.endAt = s.time + delay;
+    // short follow-through so the match flows (goal: the ball in the net + a beat)
+    this.endAt = s.time + Math.min(delay, outcome === 'goal' || outcome === 'conceded' ? 1.6 : 1.0);
     if (outcome === 'saved' || outcome === 'woodwork') this.highlight = this.highlight || (this.lastKick?.xg ?? 0) > 0.2 || outcome === 'woodwork';
   }
 
@@ -1267,7 +1276,8 @@ export class Engine {
     const shotLive = !!k && k.isShot && k.result === 'pending' && s.time - k.t < 2.6 && !this.owner;
     const limit = this.timeLimitSec();
     if (this.playClock >= limit && !shotLive) {
-      this.finish(classify(this, 'time'), 1.2, t('engine.banner.time'));
+      const progressed = this.setup.type === 'build_up' && this.owner?.side === 'us' && this.owner.st.pos.x > 2 && this.log.lastTouchT > 0;
+      this.finish(progressed ? classify(this, 'progress') : classify(this, 'time'), 1.0, progressed ? undefined : t('engine.banner.time'));
       return;
     }
     if (this.playClock >= limit + 3) {
@@ -1289,13 +1299,8 @@ export class Engine {
       // our attack fizzles: the user passed and no longer involved
       if (this.attackSide === 'us' && o.side === 'us' && !o.isUser && this.log.passesCompleted > 0) {
         const since = s.time - this.log.lastTouchT;
-        const deep = this.setup.type === 'build_up' && o.st.pos.x > -2;
-        if (deep && since > 0.6) { this.finish('pass_completed', 1.2, t('engine.banner.passOk')); return; }
-        if (since > 7) { this.finish(classify(this, 'stale'), 1.2); return; }
-      }
-      if (this.setup.type === 'build_up' && o.isUser && o.st.pos.x > 2 && this.log.lastTouchT > 0) {
-        this.finish(classify(this, 'progress'), 1.2);
-        return;
+        // play goes on while we keep the ball (the user can call for it again)
+        if (since > 8) { this.finish(classify(this, 'stale'), 1.0); return; }
       }
     } else {
       // loose ball that has stopped dead with nobody near (rare)
