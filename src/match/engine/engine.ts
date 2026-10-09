@@ -12,7 +12,7 @@ import { clamp } from '../../core/util';
 import { t } from '../../core/i18n';
 import './strings';
 import {
-  AFTERTOUCH_WINDOW, AIM_TIMESCALE, BODY_H, BODY_R, BR, DT, GH, GW, HL, HW, REPLAY_FRAMES, REPLAY_HZ,
+  AFTERTOUCH_WINDOW, AIM_TIMESCALE, BODY_H, BODY_R, BR, CALL_WINDOW, DT, GH, GW, HL, HW, REPLAY_FRAMES, REPLAY_HZ,
 } from './constants';
 import { assignSlots } from './formation';
 import { baseXg, distToGoal, hyp, inBox, segDist } from './geom';
@@ -272,7 +272,7 @@ export class Engine {
         break;
       case 'callForBall':
         if (s.time > c.callUntil - 0.5) this.emit({ t: 'call', by: this.user.id });
-        c.callUntil = s.time + 1.8;
+        c.callUntil = s.time + CALL_WINDOW;
         c.callThrough = !!cmd.through;
         this.log.calledForBall = true;
         // a team-mate on the ball reacts straight away (he decides in carrierThink)
@@ -744,6 +744,30 @@ export class Engine {
     const fromMate = !!k && k.side === a.side && k.by !== a.i && !k.isShot && !k.completed;
     a.receivedFrom = fromMate && k ? k.by : -1;
     if (fromReceive) this.receiveTime = s.time;
+    if (fromReceive && !a.isUser && a.side === this.user.side) {
+      // one touch to set it, then decide (a one-two is played off that touch)
+      a.think = (a.receivedFrom === this.user.i ? 0.1 : 0.16) + 0.02 * (a.i % 3);
+    }
+    if (fromReceive && a.isUser && this.ctl.dir) {
+      // directional first touch: the ball (and he) go the way he is steering — a touch-and-go
+      // turns his run by up to ~90° at once (the sharper the turn, the more speed it costs)
+      const want = Math.atan2(this.ctl.dir.y, this.ctl.dir.x);
+      const v = a.st.vel;
+      const sp = hyp(v.x, v.y);
+      if (sp > 0.5) {
+        const cur = Math.atan2(v.y, v.x);
+        let d = want - cur;
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d < -Math.PI) d += 2 * Math.PI;
+        const ang = cur + clamp(d, -1.6, 1.6);
+        const keep = clamp(1 - Math.abs(d) * 0.2, 0.62, 0.96);
+        v.x = Math.cos(ang) * sp * keep;
+        v.y = Math.sin(ang) * sp * keep;
+        b.vel.x = v.x; b.vel.y = v.y;
+      }
+      a.st.facing = want;
+      a.touch = 0;
+    }
     if (this.possession !== a.side) { this.possession = a.side; this.possSince = s.time; }
     if (k && k.side !== a.side) {
       k.oppTouched = true;
@@ -789,7 +813,9 @@ export class Engine {
     const pr = this.pressureOn(a);
     const diff = Math.max(0, vr - 4.5) / (9 + 17 * ft) + (b.pos.z > 0.6 ? 0.18 : 0) + pr * 0.12 * (1.2 - ft) + (a.side === 'them' ? 0.05 * (0.5 - this.setup.difficulty) : 0) - (a.isUser ? 0.1 + 0.16 * this.ease : 0)
       // team-mates meeting the user's pass at speed: a cleaner first touch
-      - (a.side === 'us' && !a.isUser && this.lastKick?.user && !this.lastKick.isShot ? 0.12 + 0.2 * this.ease : 0);
+      - (a.side === 'us' && !a.isUser && this.lastKick?.user && !this.lastKick.isShot ? 0.12 + 0.2 * this.ease : 0)
+      // ...and the user cushions team-mates' passes more easily on easy / normal
+      - (a.isUser && this.lastKick && this.lastKick.side === a.side && this.lastKick.by !== a.i && !this.lastKick.isShot ? 0.06 + 0.12 * this.ease : 0);
     const pClean = clamp(1.03 - diff, 0.1, 0.99);
     if (this.rng.chance(pClean)) {
       this.giveBall(a, true);
@@ -865,15 +891,19 @@ export class Engine {
     if (c.dir) {
       u.target = { x: st.pos.x + c.dir.x * 6, y: st.pos.y + c.dir.y * 6 };
       u.urgency = c.sprint ? 1 : 0.78;
+      // a pass is coming to him: meet it in his stride (unless he is clearly steering elsewhere)
+      const meet = this.passForUser() ? this.meetPoint(c.dir) : null;
+      if (meet) {
+        u.target = { x: meet.x, y: meet.y };
+        u.urgency = meet.urg;
+      }
     } else if (c.target) {
       u.target = { x: c.target.x, y: c.target.y };
       u.urgency = c.sprint ? 1 : 0.78;
       if (hyp(c.target.x - st.pos.x, c.target.y - st.pos.y) < 0.25) c.target = null;
     } else {
       // no input: run onto a team-mate's pass / cross meant for him (casual-play assist)
-      const k = this.lastKick;
-      if (!this.owner && k && k.side === u.side && k.by !== u.i && k.target === u.i && !k.completed && !k.oppTouched
-        && this.state.time - k.t < 3.5 && u.eitPoint && u.eit < 4) {
+      if (this.passForUser() && u.eitPoint && u.eit < 4) {
         u.target = { x: u.eitPoint.x, y: u.eitPoint.y };
         u.urgency = 0.9;
       } else {
@@ -900,6 +930,61 @@ export class Engine {
       c.tackle = null;
       this.tryTackle(u, req.slide);
     }
+  }
+
+  /** A team-mate's pass meant for the user is on its way (nobody else has touched it). */
+  passForUser(): boolean {
+    const k = this.lastKick;
+    const u = this.user;
+    return !this.owner && !!k && k.side === u.side && k.by !== u.i && k.target === u.i && !k.completed && !k.oppTouched
+      && !k.isShot && this.state.time - k.t < 3.5;
+  }
+
+  /**
+   * Where the user, steering `dir`, meets the pass on its way to him (a reachable point of the
+   * cached ball path within ~80° of his steering): in full flight the point he reaches at his
+   * running speed together with the ball, run through so he takes it in stride; from a
+   * standstill the earliest one. Null when the ball is out of reach that way (he is steering elsewhere).
+   */
+  private meetPoint(dir: Vec2): { x: number; y: number; urg: number } | null {
+    const u = this.user;
+    const p = u.st.pos;
+    const path = this.ballPath();
+    // the cached path may be up to 0.25 s old: its times run from when it was predicted
+    const age = this.loosePath ? Math.max(0, this.state.time - this.loosePath.t) : 0;
+    const v = u.topSpeed * (this.ctl.sprint ? 1 : 0.9) * (0.78 + 0.22 * u.st.stamina);
+    const slack = 0.06 + 0.12 * this.ease;
+    const sp = hyp(u.st.vel.x, u.st.vel.y);
+    // in full flight he takes it on his running line; from a standstill he goes to meet it early
+    const stride = sp > 2.4 && u.st.vel.x * dir.x + u.st.vel.y * dir.y > 0.6 * sp;
+    const start = sp < 2 ? 0.2 : 0.05;
+    let best: PathSample | null = null;
+    let bestV = Infinity;
+    let bestT = 0;
+    for (let i = 1; i < path.length; i++) {
+      const q = path[i];
+      const qt = q.t - age;
+      if (q.z > 1.3 || qt <= 0) continue;
+      const dx = q.x - p.x;
+      const dy = q.y - p.y;
+      const d = hyp(dx, dy);
+      if (start + Math.max(0, d - 0.6) / v > qt + slack) continue;
+      const cos = d < 1.5 ? 1 : (dx * dir.x + dy * dir.y) / d;
+      if (cos < (stride ? 0.17 : 0.34)) continue;
+      const lat = Math.abs(dx * dir.y - dy * dir.x);
+      // in full flight: where he gets to at his running speed just as the ball does (no braking);
+      // from a standstill: the first moment he can get to it
+      const score = stride ? Math.abs(qt - d / Math.max(sp, 3)) * 2 + qt * 0.15 + lat * 0.1 : qt + lat * 0.06;
+      if (score < bestV) { bestV = score; best = q; bestT = qt; }
+    }
+    if (!best) return null;
+    const dx = best.x - p.x;
+    const dy = best.y - p.y;
+    const d = hyp(dx, dy);
+    if (!stride || d < 0.6) return { x: best.x + dir.x * 0.8, y: best.y + dir.y * 0.8, urg: this.ctl.sprint ? 1 : 0.9 };
+    // timed run: through the meeting point at the speed that gets him there with the ball
+    const want = d / Math.max(0.05, bestT) / (u.topSpeed * (0.78 + 0.22 * u.st.stamina));
+    return { x: best.x + (dx / d) * 4.5, y: best.y + (dy / d) * 4.5, urg: clamp(want, 0.55, this.ctl.sprint ? 1 : 0.95) };
   }
 
   private trackDribbles(): void {
@@ -1228,6 +1313,8 @@ export class Engine {
         continue;
       }
       let reach = z < 0.75 ? 0.78 : z < 1.6 ? 0.5 : 0;
+      // casual play: the user gathers passes meant for him a little more surely
+      if (a.isUser && k && k.side === a.side && k.target === a.i && !k.isShot) reach *= 1 + 0.3 * this.ease;
       // casual play: opponents cut out fewer of the user's passes
       if (a.side === 'them' && k && k.user && !k.isShot && s.time - k.t < 3) reach *= 1 - 0.62 * this.ease;
       // ...and fewer of the passes played to him

@@ -29,6 +29,8 @@ export interface HudFrame {
   pass: { x: number; y: number; label: string } | null;
   /** Calm aim: the drawn stroke (screen points, from the ball) and player marks. */
   aim?: { stroke: { x: number; y: number }[] | null; marks: AimMark[] } | null;
+  /** Small hint over a team-mate (the one-two is on: run and he gives it back). */
+  cue?: { x: number; y: number; label: string } | null;
 }
 
 export interface Hud {
@@ -244,7 +246,7 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
 
   const drawFrame = (f: HudFrame) => {
     if (!g) return;
-    if (!f.charge && !f.pass && !f.aim) {
+    if (!f.charge && !f.pass && !f.aim && !f.cue) {
       if (drawn) { g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, canvas.width, canvas.height); drawn = false; }
       return;
     }
@@ -273,6 +275,24 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
       g.fill();
     }
     if (f.aim) drawAim(f.aim);
+    if (f.cue) {
+      const { x, label } = f.cue;
+      const y = f.cue.y - 16;
+      g.font = '700 11px Inter, system-ui, sans-serif';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      const w = g.measureText(label).width + 14;
+      g.fillStyle = 'rgba(4,10,7,0.72)';
+      g.strokeStyle = 'rgba(110,235,150,0.9)';
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.roundRect?.(x - w / 2, y - 9, w, 18, 9);
+      if (!g.roundRect) g.rect(x - w / 2, y - 9, w, 18);
+      g.fill();
+      g.stroke();
+      g.fillStyle = 'rgb(150,245,180)';
+      g.fillText(label, x, y + 0.5);
+    }
     if (f.charge) {
       const { x, y, value, curl, chip } = f.charge;
       const r = 26;

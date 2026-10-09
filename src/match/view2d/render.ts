@@ -709,3 +709,54 @@ export function drawAimMarks(
   }
   ctx.restore();
 }
+
+/** Support cues: a soft green ring under open team-mates, a faint dark one under covered ones, and the one-two hint. */
+export function drawSupport(
+  ctx: CanvasRenderingContext2D, c: Cam, snap: Snap, cue: { open: string[]; covered: string[]; oneTwo: string | null; label: string } | null, clock: number,
+  part: 'rings' | 'hint',
+): void {
+  if (!cue) return;
+  screenT(ctx, c);
+  const at = (id: string) => snap.players.find((p) => p.id === id);
+  const R = playerRadius(c, false) + 4;
+  ctx.lineWidth = 2;
+  if (part === 'hint') {
+    drawOneTwo(ctx, c, cue.oneTwo ? at(cue.oneTwo) : undefined, cue.label, R);
+    return;
+  }
+  for (const id of cue.covered) {
+    const p = at(id);
+    if (!p) continue;
+    ctx.strokeStyle = 'rgba(8,14,12,0.35)';
+    ctx.beginPath();
+    ctx.arc(sx(c, p.x), sy(c, p.y), R, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  for (const id of cue.open) {
+    const p = at(id);
+    if (!p) continue;
+    ctx.strokeStyle = `rgba(110,235,150,${0.7 + 0.15 * Math.sin(clock * 3)})`;
+    ctx.beginPath();
+    ctx.arc(sx(c, p.x), sy(c, p.y), R + 1, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+function drawOneTwo(ctx: CanvasRenderingContext2D, c: Cam, m: Vec2 | undefined, label: string, R: number): void {
+  if (m) {
+    const x = sx(c, m.x);
+    const y = sy(c, m.y) - R - 16;
+    ctx.font = '700 11px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const w = ctx.measureText(label).width + 14;
+    ctx.fillStyle = 'rgba(4,10,7,0.72)';
+    ctx.strokeStyle = 'rgba(110,235,150,0.9)';
+    ctx.lineWidth = 1.5;
+    rrect(ctx, x - w / 2, y - 9, w, 18, 9);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgb(150,245,180)';
+    ctx.fillText(label, x, y + 0.5);
+  }
+}

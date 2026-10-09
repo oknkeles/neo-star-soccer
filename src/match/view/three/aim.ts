@@ -170,3 +170,65 @@ export function buildUserMarker(rgb = '184,255,60', size = 1.9): UserMarker {
     dispose() { tex.dispose(); mat.dispose(); geo.dispose(); },
   };
 }
+
+export interface SupportRings {
+  group: THREE.Group;
+  /** Rings under team-mates: soft green when open for a pass, a faint dark one when covered. */
+  update(time: number, rings: readonly { x: number; y: number; open: boolean }[]): void;
+  dispose(): void;
+}
+
+function ringTexture(inner: string, outer: string): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  if (g) {
+    const grad = g.createRadialGradient(64, 64, 34, 64, 64, 62);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(0.55, inner);
+    grad.addColorStop(0.78, outer);
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 128, 128);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** Pool of quiet ground rings marking who is open (calm, no spinning — the user's own ring stays the hero). */
+export function buildSupportRings(max = 10): SupportRings {
+  const group = new THREE.Group();
+  const openTex = ringTexture('rgba(120,240,160,0.95)', 'rgba(120,240,160,0.3)');
+  const coverTex = ringTexture('rgba(10,16,14,0.55)', 'rgba(10,16,14,0.18)');
+  const openMat = new THREE.MeshBasicMaterial({ map: openTex, transparent: true, depthWrite: false, opacity: 0.9 });
+  const coverMat = new THREE.MeshBasicMaterial({ map: coverTex, transparent: true, depthWrite: false, opacity: 0.7 });
+  const geo = new THREE.PlaneGeometry(1.9, 1.9);
+  const pool: THREE.Mesh[] = [];
+  for (let i = 0; i < max; i++) {
+    const m = new THREE.Mesh(geo, openMat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.y = 0.025;
+    m.renderOrder = 2;
+    m.visible = false;
+    group.add(m);
+    pool.push(m);
+  }
+  return {
+    group,
+    update(time, rings) {
+      for (let i = 0; i < pool.length; i++) {
+        const m = pool[i];
+        const r = rings[i];
+        if (!r) { m.visible = false; continue; }
+        m.visible = true;
+        m.material = r.open ? openMat : coverMat;
+        m.position.x = r.x;
+        m.position.z = -r.y;
+        const s = r.open ? 1 + Math.sin(time * 3 + i) * 0.04 : 0.85;
+        m.scale.set(s, s, 1);
+      }
+    },
+    dispose() { openTex.dispose(); coverTex.dispose(); openMat.dispose(); coverMat.dispose(); geo.dispose(); },
+  };
+}

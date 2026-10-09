@@ -4,7 +4,7 @@
  * outcome beat, a simple replay and touch controls. Same contract as the 3D mountMomentView.
  */
 import type { CameraMode, MomentEvent, MomentOutcome, MomentSetup, ReplayFrame, Vec2, Vec3 } from '../../core/types';
-import type { MomentEngine } from '../engine/api';
+import { supportInfo, type MomentEngine, type SupportCue } from '../engine/api';
 import type { MomentViewHandle, MomentViewOptions } from '../view/api';
 import { audio } from '../../audio/api';
 import { t } from '../../core/i18n';
@@ -13,7 +13,7 @@ import { Controls, controlMode, controlRows, keyLabel } from '../controls/contro
 import { mountTouchControls, type TouchUi } from '../controls/touch';
 import { mountAimPanel, surname } from '../controls/aimPanel';
 import {
-  ACCENT, GW, HL, HW, drawAimMarks, drawBall, sx, sy, drawBanner, drawFlash, drawGoals, drawHint, drawLabel, drawMinimap,
+  ACCENT, GW, HL, HW, drawAimMarks, drawBall, sx, sy, drawBanner, drawSupport, drawFlash, drawGoals, drawHint, drawLabel, drawMinimap,
   drawOffscreenArrow, drawPath, drawPitch, drawPlayers, drawPowerBar, drawTarget, drawTimeBar, spawnConfetti,
   stepConfetti, teamLooks, type Cam, type Confetto, type PlayerMeta, type Snap,
 } from './render';
@@ -197,6 +197,9 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
 
   const aimPanel = mountAimPanel(root, controls);
   let frozenShown = false;
+  let cue: SupportCue | null = null;
+  let cueT = 0;
+  let cueKey = '';
   const aimMarks: { x: number; y: number; kind: 'pass' | 'danger'; label: string }[] = [];
 
   // ── touch controls (DOM) ──
@@ -389,7 +392,19 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
     }
     if (live && !calm && ov.aimPoint && !ov.touch && hasBall && !(ov.aimPoint.x > HL - 14 && Math.abs(ov.aimPoint.y) < GW + 7)) drawTarget(ctx, cam, ov.aimPoint, false, clock);
 
+    // support cues: open team-mates (green) / covered (dim), the one-two hint (~5 Hz)
+    cueT -= rawDt;
+    const cueKey2 = `${frozen ? 'f' : 'l'}${s.ball.ownerId ?? '-'}${s.ball.lastTouchId ?? '-'}`;
+    if (!live) cue = null;
+    else if (cueT <= 0 || cueKey2 !== cueKey) {
+      cueT = 0.2;
+      cueKey = cueKey2;
+      try { cue = supportInfo(engine); } catch { cue = null; }
+    }
+    const cueDraw = cue ? { open: hasBall || calm ? cue.open : [], covered: hasBall || calm ? cue.covered : [], oneTwo: calm ? null : cue.oneTwo, label: t('view.hud.oneTwo') } : null;
+    drawSupport(ctx, cam, snap, cueDraw, clock, 'rings');
     drawPlayers(ctx, cam, snap, metas, clock, { highlightId: live && hasBall && !calm ? ov.pass?.id ?? null : null, highlightKey: ov.touch ? t('v2d.touch.pass') : 'F' });
+    drawSupport(ctx, cam, snap, cueDraw, clock, 'hint');
     drawBall(ctx, cam, snap.ball, trail, roll);
     if (calm) {
       const a = calm.analysis;

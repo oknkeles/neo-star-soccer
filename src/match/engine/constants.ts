@@ -55,3 +55,6 @@ export const AIM_TIMESCALE = 0.2;
 /** Player body for ball collisions. */
 export const BODY_R = 0.3;
 export const BODY_H = 1.85;
+
+/** Seconds a call for the ball (F) stays active. */
+export const CALL_WINDOW = 1.8;

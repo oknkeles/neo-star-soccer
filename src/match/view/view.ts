@@ -9,14 +9,14 @@ import { t } from '../../core/i18n';
 import { onSettingsChange, updateSettings } from '../../core/settings';
 import type { CameraMode, Kit, MomentEvent, MomentPlayerSpec, MomentPlayerState, MomentSetup, ReplayFrame, Vec2, Vec3 } from '../../core/types';
 import { audio, setAudioFocus } from '../../audio/api';
-import type { MomentEngine } from '../engine/api';
+import { supportInfo, type MomentEngine, type SupportCue } from '../engine/api';
 import { createCameraRig, createFramingDirector, desiredFraming, orbitFraming } from './camera';
 import { createHud, outcomeTone, type AimMark } from './hud';
 import { Controls, type ControlsMode } from '../controls/controls';
 import { mountAimPanel, surname } from '../controls/aimPanel';
 import { mountTouchControls, type TouchUi } from '../controls/touch';
 import { goalkeeperColor, resolveKitClash, shade, shortsColor } from './palette';
-import { buildAim, buildUserMarker } from './three/aim';
+import { buildAim, buildSupportRings, buildUserMarker } from './three/aim';
 import { buildBall } from './three/ball';
 import { buildPlayer, createBodyMaterial, nameTag, type PlayerFrame, type PlayerLook, type PlayerRig } from './three/players';
 import { buildWorld, createRenderer } from './three/world';
@@ -156,6 +156,13 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
   scene.add(aim.group);
   const passMarker = buildUserMarker('120,210,255', 1.5);
   scene.add(passMarker.group);
+  // who is open for a pass (green) / covered (dim), and the one-two hint after the user's pass
+  const supportRings = buildSupportRings();
+  scene.add(supportRings.group);
+  let cue: SupportCue | null = null;
+  let cueT = 0;
+  let cueKey = '';
+  const ringList: { x: number; y: number; open: boolean }[] = [];
 
   // ── projection helpers ──
   let W = 1;
@@ -509,6 +516,21 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     const pick = ov && ov.mode === 'attack' && !ov.charge && !calm && ov.pass?.id ? ov.pass : null;
     const pf = pick?.id ? frames.get(pick.id) : undefined;
     passMarker.update(clock, pf?.pos.x ?? 0, pf?.pos.y ?? 0, false, !!pf);
+    // support cues (refreshed ~5 Hz; once while the calm aim holds the game still)
+    cueT -= rawDt;
+    const key = `${frozen ? 'f' : 'l'}${s.ball.ownerId ?? '-'}${s.ball.lastTouchId ?? '-'}`;
+    if (!live) cue = null;
+    else if (cueT <= 0 || (key !== cueKey && !frozen) || (frozen && cueKey !== key)) {
+      cueT = 0.2;
+      cueKey = key;
+      try { cue = supportInfo(engine); } catch { cue = null; }
+    }
+    ringList.length = 0;
+    if (cue && (ov?.mode === 'attack' || calm)) {
+      for (const id of cue.open) { const f = frames.get(id); if (f) ringList.push({ x: f.pos.x, y: f.pos.y, open: true }); }
+      for (const id of cue.covered) { const f = frames.get(id); if (f) ringList.push({ x: f.pos.x, y: f.pos.y, open: false }); }
+    }
+    supportRings.update(clock, ringList);
     if (calm) {
       // the full noise-free path of the frozen aim (rebuilt only when the aim changed)
       if (calm.version !== aimVersion || !aimShown) {
@@ -575,10 +597,12 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
         }
         aimFrame = { stroke: strokeScreen.length > 1 ? strokeScreen : null, marks };
       }
+      const ot = cue?.oneTwo && !calm ? headScreen(cue.oneTwo, 0.5) : null;
       hud.frame({
         charge: head && ov.charge ? { x: head.x, y: head.y, value: ov.charge.value, curl: ov.charge.curl, chip: ov.charge.chip } : null,
         pass: badge ? { x: badge.x, y: badge.y, label: controls.touchMode ? t('v2d.touch.pass') : 'F' } : null,
         aim: aimFrame,
+        cue: ot ? { x: ot.x, y: ot.y, label: t('view.hud.oneTwo') } : null,
       });
     }
     windTimer -= rawDt;
@@ -601,6 +625,8 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       hud.setTime(null);
       hud.setHint(null);
       passMarker.update(clock, 0, 0, false, false);
+      supportRings.update(clock, []);
+      cue = null;
       aim.setPath(null, 0);
       lastPath = null;
       aimShown = false;
@@ -645,6 +671,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       bodyMat.dispose();
       marker.dispose();
       passMarker.dispose();
+      supportRings.dispose();
       blobGeo?.dispose();
       blobMat?.dispose();
       blobTex?.dispose();
@@ -677,6 +704,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       controls.cancel();
       hud.setBanner(null);
       passMarker.update(0, 0, 0, false, false);
+      supportRings.update(0, []);
       aim.setPath(null, 0);
       lastPath = null;
       hud.setReplay(true);

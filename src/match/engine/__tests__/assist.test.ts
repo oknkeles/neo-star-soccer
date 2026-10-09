@@ -85,6 +85,7 @@ describe('direction-based controls (shoot where you run, F = pass / call)', () =
       let n = 0;
       let ok = 0;
       let slow = 0;
+      let latest = 0;
       for (const type of ['build_up', 'open_play', 'counter'] as MomentType[]) {
         for (let seed = 1; seed <= 12; seed++) {
           const e = createMoment(makeSetup(type, { seed, difficulty: diff, timeLimit: 16 }));
@@ -114,13 +115,15 @@ describe('direction-based controls (shoot where you run, F = pass / call)', () =
           if (calledAt < 0) continue;
           n++;
           const kick = evs.find((x) => x.t >= calledAt && x.ev.t === 'kick' && x.ev.by === mate);
-          if (kick) { ok++; if (kick.t - calledAt > 0.3) slow++; }
+          if (kick) { ok++; if (kick.t - calledAt > 0.3) slow++; latest = Math.max(latest, kick.t - calledAt); }
         }
       }
-      console.log('call for the ball', diff, ok, '/', n, 'slow', slow);
+      console.log('call for the ball', diff, ok, '/', n, 'slow', slow, 'latest', latest.toFixed(2));
       expect(n).toBeGreaterThan(10);
       expect(ok / n).toBeGreaterThanOrEqual(0.8);
-      expect(slow).toBeLessThanOrEqual(Math.ceil(n * 0.1));
+      // straight away, unless the lane is shut and he is about to come free: then a beat (≤ ~0.6 s)
+      expect(slow).toBeLessThanOrEqual(Math.ceil(n * 0.15));
+      expect(latest).toBeLessThanOrEqual(0.8);
     }
   }, 60000);
 });

@@ -97,5 +97,5 @@ export function autoResolve(setup: MomentSetup, rng: Rng): MomentResult {
  * Casual-play control assists (used by the 2D view): automatic aim for shots, best team-mate
  * selection for passes / through balls, and a cheap info snapshot for the aim UI.
  */
-export { assistShot, assistShotDir, assistPass, pickPass, assistInfo, kickDir, goalBound, GOAL_CONE } from './assist';
-export type { ShotIntent, DirShotIntent, PassIntent, PassPick, AssistInfo } from './assist';
+export { assistShot, assistShotDir, assistPass, pickPass, assistInfo, kickDir, goalBound, supportInfo, GOAL_CONE } from './assist';
+export type { ShotIntent, DirShotIntent, PassIntent, PassPick, AssistInfo, SupportCue } from './assist';

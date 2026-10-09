@@ -103,6 +103,20 @@ export interface Agent {
   passive: boolean;
   /** Steering hysteresis: arrived at a (slowly moving) target; restarts only when it drifts away. */
   settled?: boolean;
+  /** Off-ball support plan memory (role around the carrier, offset from the ball, next re-evaluation). */
+  sup?: SupMem | null;
+}
+
+export type SupRole = 'shortA' | 'shortB' | 'squareA' | 'squareB' | 'line' | 'deep' | 'wideA' | 'wideB' | 'run' | 'overlap' | 'shape';
+
+export interface SupMem {
+  role: SupRole;
+  /** Chosen spot relative to the (future) ball position. */
+  off: Vec2;
+  /** Sim time of the next re-evaluation. */
+  t: number;
+  /** Carrier (agent index) the plan was made around. */
+  c: number;
 }
 
 export interface KickRec {

@@ -11,7 +11,7 @@ import { Engine } from './engine';
 import { distToGoal, hyp } from './geom';
 import type { Agent } from './internal';
 import { naturalCurlSign } from './kick';
-import { laneRisk, passOptions } from './ai';
+import { laneRisk, openMates, passOptions } from './ai';
 import { atDistance, groundPass, launched, predictPath, solveLob, solveShot } from './solver';
 
 export interface ShotIntent {
@@ -403,4 +403,37 @@ export function assistPass(engine: MomentEngine, intent: PassIntent): KickParams
   if (pick.lofted) return solveLob(e.env, k, from, pick.at, intent.through ? 0.4 : 0.9, 0, 0.42);
   const arrive = intent.through ? 4.5 : clamp(4.5 + dist * 0.1, 5.5, 8.5);
   return groundPass(e.env, k, from, pick.at, arrive);
+}
+
+/** Who the user can pass to right now, and who would play a one-two back (cheap enough for ~5 Hz). */
+export interface SupportCue {
+  /** Team-mates with an open lane (8–30 m, onside, no opponent can step in) while the user has the ball. */
+  open: string[];
+  /** The other outfield team-mates (marked / lane shut / out of range). */
+  covered: string[];
+  /** Team-mate who gives the ball straight back if the user runs on after his pass (null = none). */
+  oneTwo: string | null;
+}
+
+const NO_CUE: SupportCue = { open: [], covered: [], oneTwo: null };
+
+export function supportInfo(engine: MomentEngine): SupportCue {
+  const e = asEngine(engine);
+  if (!e) return NO_CUE;
+  const s = e.state;
+  if (s.phase === 'intro' || s.phase === 'outcome' || s.phase === 'ended' || e.frozen) return NO_CUE;
+  const u = e.user;
+  let oneTwo: string | null = null;
+  const k = e.lastKick;
+  if (k && k.user && !k.isShot && !k.oppTouched && k.target >= 0 && s.time - k.t < 3.2) {
+    const m = e.agents[k.target];
+    const live = m && m.side === u.side && !m.isUser && !m.isGK
+      && ((!e.owner && !k.completed) || (e.owner === m && m.receivedFrom === u.i && m.carryT < 2));
+    if (live && hyp(m.st.pos.x - u.st.pos.x, m.st.pos.y - u.st.pos.y) < 32) oneTwo = m.id;
+  }
+  // the user on the ball (or about to strike it in the calm aim)
+  const onBall = e.owner === u || (!e.owner && e.frozenForAim);
+  if (!onBall) return oneTwo ? { open: [], covered: [], oneTwo } : NO_CUE;
+  const { open, covered } = openMates(e, u);
+  return { open: open.map((a) => a.id), covered: covered.map((a) => a.id), oneTwo };
 }

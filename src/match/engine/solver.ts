@@ -159,12 +159,14 @@ export function solveShot(
   return { params: { dir, power, loft, curl }, hit };
 }
 
+const LOFTS = [0.32, 0.42, 0.52, 0.64] as const;
+
 /**
  * Lofted delivery (cross / chip / long ball): the ball comes down through height `zAt`
  * at the target point. Tries a few launch lofts and returns the most natural solution.
  */
 export function solveLob(
-  env: PhysEnv, k: Kicker, from: Vec3, to: Vec2, zAt: number, curl = 0, prefLoft = 0.45,
+  env: PhysEnv, k: Kicker, from: Vec3, to: Vec2, zAt: number, curl = 0, prefLoft = 0.45, lofts: readonly number[] = LOFTS,
 ): KickParams {
   const spec: KickSpec = { kind: 'ground', isShot: false, pressure: 0, difficulty: 0.5 };
   const dx = to.x - from.x;
@@ -173,7 +175,7 @@ export function solveLob(
   let dir = { x: dx / d, y: dy / d };
   let best: KickParams | null = null;
   let bestScore = Infinity;
-  for (const loft of [0.32, 0.42, 0.52, 0.64]) {
+  for (const loft of lofts) {
     let lo = 0.05;
     let hi = 1;
     let p = 0.5;
