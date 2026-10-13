@@ -15,6 +15,8 @@ export interface Kicker {
   weakFoot: number;
   /** 0..1 */
   stamina: number;
+  /** Body facing (radians) when he strikes it: decides how the foot wraps round the ball. */
+  facing?: number;
 }
 
 export interface KickSpec {
@@ -49,6 +51,28 @@ export function naturalCurlSign(foot: Foot): 1 | -1 {
 export function curlFootFactor(k: Pick<Kicker, 'foot' | 'weakFoot'>, curl: number): number {
   if (curl * naturalCurlSign(k.foot) >= 0) return 1;
   return 0.55 + 0.09 * clamp(k.weakFoot, 1, 5);
+}
+
+/**
+ * The natural side-spin (rad/s) of an ordinary strike with no curl asked for: a right-footer's
+ * ball turns a little to the left (a left-footer's to the right) — next to nothing on a soft
+ * side-foot pass, a visible drift on a driven or lofted ball; more when he strikes across his
+ * body (the foot wraps round the ball), less when he opens it up with the outside.
+ */
+export function naturalSpin(p: KickParams, k: Pick<Kicker, 'foot' | 'facing'>, spec: Pick<KickSpec, 'kind'>): number {
+  if (spec.kind === 'header') return 0;
+  const sign = naturalCurlSign(k.foot);
+  const pw = clamp(p.power, 0, 1);
+  let mag = (0.5 + 5 * pw * pw) * (1 + 1.3 * clamp(p.loft, 0, 1));
+  if (k.facing !== undefined && Number.isFinite(k.facing)) {
+    let rel = Math.atan2(p.dir.y, p.dir.x) - k.facing;
+    while (rel > Math.PI) rel -= 2 * Math.PI;
+    while (rel < -Math.PI) rel += 2 * Math.PI;
+    // (+ = to his left: across the body for a right-footer)
+    mag *= 1 + 0.35 * clamp((rel * sign) / 1.2, -1, 1);
+  }
+  if (spec.kind === 'volley') mag *= 0.7;
+  return sign * mag;
 }
 
 /** Maximum launch speed (m/s) for the kick type. */
@@ -106,8 +130,11 @@ export function computeLaunch(p: KickParams, k: Kicker, spec: KickSpec, rng: Rng
   let speed = kickSpeed(a, p, spec);
   let phi = launchAngle(p.loft, spec.kind);
   const curl = spec.kind === 'header' ? 0 : clamp(p.curl, -1, 1) * (spec.kind === 'volley' ? 0.6 : 1);
-  const spinCap = maxSpin(a.curl) * curlFootFactor(k, curl);
-  let wz = curl * spinCap;
+  // (a bent pass along the ground is struck across the ball with the inside / outside of the boot:
+  // much more spin for its pace than a shot)
+  const spinCap = maxSpin(a.curl) * curlFootFactor(k, curl) * (spec.isShot ? 1 : 1 + 0.6 * clamp(1 - p.loft / 0.25, 0, 1));
+  // asked-for curl, blended with the strike's natural spin (it takes over as the curl grows)
+  let wz = curl * spinCap + naturalSpin(p, k, spec) * (1 - Math.min(1, Math.abs(curl) * 2.5));
 
   if (rng) {
     const mul = noiseMul(k, p, spec);

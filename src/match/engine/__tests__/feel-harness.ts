@@ -167,15 +167,15 @@ function orientation(): { jitterDeg: number; snaps: number; skate: number; footS
 
 // ───────────────────────── pass tracking ─────────────────────────
 
-interface PassAcc { n: number; ok: number; int: number; out: number; none: number; arr: number[]; prog: number; errN: number; err: number }
-const newPass = (): PassAcc => ({ n: 0, ok: 0, int: 0, out: 0, none: 0, arr: [], prog: 0, errN: 0, err: 0 });
+interface PassAcc { n: number; ok: number; int: number; out: number; none: number; arr: number[]; prog: number; errN: number; err: number; thr: number; thrOk: number; behind: number; unres: number }
+const newPass = (): PassAcc => ({ n: 0, ok: 0, int: 0, out: 0, none: 0, arr: [], prog: 0, errN: 0, err: 0, thr: 0, thrOk: 0, behind: 0, unres: 0 });
 
 /**
  * Follows every pass (non-shot kick with an intended receiver) of the filter: completed (a
  * team-mate controls / plays it), intercepted (an opponent touches it first) or out.
  */
 class PassWatch {
-  private open = new Map<number, { side: string; by: string; fromX: number; dir: number }>();
+  private open = new Map<number, { side: string; by: string; fromX: number; dir: number; line: number; thr: boolean }>();
   private seen = 0;
   private lastBallRel = new Map<string, number>();
   constructor(private e: Engine, private acc: PassAcc, private filter: (k: Engine['kicks'][number]) => boolean) {
@@ -191,6 +191,9 @@ class PassWatch {
           if (rel !== undefined) this.acc.arr.push(rel);
           const a = this.e.agents.find((x) => x.id === ev.by)!;
           this.acc.prog += (a.st.pos.x - o.fromX) * o.dir;
+          // received behind the defensive line of the moment of the pass (a successful ball in behind)
+          if (a.st.pos.x * o.dir > o.line + 0.5 && a.st.pos.x * o.dir > o.fromX * o.dir + 4) this.acc.behind++;
+          if (o.thr) this.acc.thrOk++;
         } else if (ev.side !== o.side) this.acc.int++;
         else continue;
         this.open.delete(id);
@@ -201,6 +204,11 @@ class PassWatch {
   pre(): void {
     const e = this.e;
     const b = e.state.ball;
+    // the moment ended with the ball still on its way: no verdict (not counted)
+    if (e.state.phase === 'outcome' || e.state.phase === 'ended') {
+      for (const [id] of this.open) { this.acc.n--; this.acc.unres++; this.open.delete(id); }
+      return;
+    }
     this.lastBallRel.clear();
     if (!e.owner) for (const a of e.agents) {
       if (Math.hypot(b.pos.x - a.st.pos.x, b.pos.y - a.st.pos.y) < 3) this.lastBallRel.set(a.id, Math.hypot(b.vel.x - a.st.vel.x, b.vel.y - a.st.vel.y));
@@ -209,14 +217,16 @@ class PassWatch {
       const k = e.kicks[this.seen++];
       // a new kick resolves the passes before it (one-touch by a team-mate = completed)
       for (const [id, o] of this.open) {
-        if (k.side === o.side && e.agents[k.by].id !== o.by) this.acc.ok++;
+        if (k.side === o.side && e.agents[k.by].id !== o.by) { this.acc.ok++; if (o.thr) this.acc.thrOk++; }
         else if (k.side !== o.side) this.acc.int++;
         else this.acc.none++;
         this.open.delete(id);
       }
       if (!k.isShot && this.filter(k)) {
         this.acc.n++;
-        this.open.set(k.id, { side: k.side, by: e.agents[k.by].id, fromX: k.from.x, dir: k.dir });
+        const thr = !!(k as { through?: boolean }).through;
+        if (thr) this.acc.thr++;
+        this.open.set(k.id, { side: k.side, by: e.agents[k.by].id, fromX: k.from.x, dir: k.dir, line: e.offsideX(k.side) * k.dir, thr });
       }
     }
     for (const [id, o] of this.open) {
@@ -224,7 +234,7 @@ class PassWatch {
       if (t && t !== o.side) { this.acc.int++; this.open.delete(id); }
     }
   }
-  finish(): void { this.acc.none += this.open.size; this.open.clear(); }
+  finish(): void { this.acc.n -= this.open.size; this.acc.unres += this.open.size; this.open.clear(); }
 }
 
 const passOut = (p: PassAcc) => {
@@ -234,6 +244,7 @@ const passOut = (p: PassAcc) => {
     n: p.n, completion: r2(p.ok / Math.max(1, p.n)), intercepted: r2(p.int / Math.max(1, p.n)), out: r2(p.out / Math.max(1, p.n)),
     arrP10: q(0.1), arrMed: q(0.5), arrP90: q(0.9), hard: r2(a.filter((x) => x > 13).length / Math.max(1, a.length)),
     prog: r2(p.prog / Math.max(1, p.ok)), previewErr: p.errN ? r2(p.err / p.errN) : NaN,
+    behind: p.behind, behindShare: r2(p.behind / Math.max(1, p.ok)), through: p.thr, throughOk: p.thr ? r2(p.thrOk / p.thr) : NaN,
   };
 };
 
@@ -250,15 +261,40 @@ function drawTarget(e: Engine): Agent | null {
   return mates[0]?.m ?? null;
 }
 
-/** Draw a straight stroke from the ball to `end` and return the calm aim (as the controls would). */
-function drawAim(e: Engine, end: Vec2, loftIdx: number | null, intent: 'pass' | 'shot' = 'pass'): CalmAim {
+/**
+ * Draw a stroke from the ball to `end` and return the calm aim (as the controls would). `bulge`:
+ * a bent stroke (an arc bulging that many metres to the left of the line, negative = right).
+ */
+function drawAim(e: Engine, end: Vec2, loftIdx: number | null, intent: 'pass' | 'shot' = 'pass', bulge = 0): CalmAim {
   const b = e.state.ball.pos;
   const aim = new CalmAim(e, { dir: norm(end.x - b.x, end.y - b.y), power: 0.5, loft: 0, curl: 0 }, intent);
   if (loftIdx !== null) aim.setLoft(loftIdx);
-  aim.begin({ x: b.x + (end.x - b.x) * 0.1, y: b.y + (end.y - b.y) * 0.1 }, 'mouse');
-  for (let k = 2; k <= 12; k++) aim.extend({ x: b.x + ((end.x - b.x) * k) / 12, y: b.y + ((end.y - b.y) * k) / 12 });
+  const L = Math.hypot(end.x - b.x, end.y - b.y) || 1;
+  const nx = -(end.y - b.y) / L;
+  const ny = (end.x - b.x) / L;
+  const pt = (f: number) => ({ x: b.x + (end.x - b.x) * f + nx * bulge * 4 * f * (1 - f), y: b.y + (end.y - b.y) * f + ny * bulge * 4 * f * (1 - f) });
+  aim.begin(pt(0.1), 'mouse');
+  for (let k = 2; k <= 12; k++) aim.extend(pt(k / 12));
   aim.end();
   return aim;
+}
+
+/** Which way to bend a pass to `end`: away from the opponent nearest the straight line (bulge in metres, left +). */
+function bendAround(e: Engine, end: Vec2): number {
+  const b = e.state.ball.pos;
+  const L = Math.hypot(end.x - b.x, end.y - b.y) || 1;
+  let best = Infinity;
+  let side = 1;
+  for (const o of e.agents) {
+    if (o.side === e.user.side || o.passive) continue;
+    const rx = o.st.pos.x - b.x;
+    const ry = o.st.pos.y - b.y;
+    const along = (rx * (end.x - b.x) + ry * (end.y - b.y)) / L;
+    if (along < 1 || along > L - 1) continue;
+    const lat = (-(end.y - b.y) * rx + (end.x - b.x) * ry) / L;
+    if (Math.abs(lat) < best) { best = Math.abs(lat); side = lat > 0 ? -1 : 1; }
+  }
+  return side * Math.min(2.5, 0.75 + L * 0.07);
 }
 
 /** Preview vs reality: mean distance between the noise-free preview and the real flight at ~1 s (before any touch). */
@@ -289,7 +325,7 @@ class PreviewCheck {
 }
 
 /** The user plays passes (fast: F = assistPass; calm: a drawn stroke to a team-mate), then team-mates play on. */
-function passEpisodes(mode: 'fast' | 'calm', diff: number, seeds: number, userAcc: PassAcc, aiAcc: PassAcc, toUser?: PassAcc, oppAcc?: PassAcc): void {
+function passEpisodes(mode: 'fast' | 'calm' | 'bent', diff: number, seeds: number, userAcc: PassAcc, aiAcc: PassAcc, toUser?: PassAcc, oppAcc?: PassAcc): void {
   for (const type of ['open_play', 'build_up', 'counter'] as MomentType[]) {
     for (let seed = 1; seed <= seeds; seed++) {
       const me = createMoment(makeSetup(type, { seed, difficulty: diff, timeLimit: 16 }));
@@ -319,7 +355,7 @@ function passEpisodes(mode: 'fast' | 'calm', diff: number, seeds: number, userAc
                   me.input({ kind: 'aimStart', freeze: true });
                   const lead = { x: m.st.pos.x + m.st.vel.x * 0.5 + 1.6 * gauss(seed, passes * 11 + 1), y: m.st.pos.y + m.st.vel.y * 0.5 + 1.6 * gauss(seed, passes * 11 + 2) };
                   const far = Math.hypot(lead.x - s.ball.pos.x, lead.y - s.ball.pos.y) > 30;
-                  const aim = drawAim(e, lead, far ? 2 : null);
+                  const aim = drawAim(e, lead, far ? 2 : null, 'pass', mode === 'bent' ? bendAround(e, lead) : 0);
                   const an = aim.analysis();
                   me.input({ kind: 'kick', params: aim.params() });
                   pc.start(an.path);
@@ -547,8 +583,9 @@ function mateCrosses(diff: number, seeds: number, acc: CrossAcc): void {
 
 // ───────────────────────── report ─────────────────────────
 
-export function measureFeel(opts: { seeds?: number; parts?: ('move' | 'pass' | 'cross')[] } = {}) {
+export function measureFeel(opts: { seeds?: number; parts?: ('move' | 'pass' | 'cross')[]; diffs?: [string, number][] } = {}) {
   const seeds = opts.seeds ?? 15;
+  const diffs = opts.diffs ?? [['easy', 0.3], ['normal', 0.5]];
   const parts = opts.parts ?? ['move', 'pass', 'cross'];
   const out: Record<string, unknown> = {};
   if (parts.includes('move')) {
@@ -560,23 +597,25 @@ export function measureFeel(opts: { seeds?: number; parts?: ('move' | 'pass' | '
   }
   if (parts.includes('pass')) {
     const pass: Record<string, unknown> = {};
-    for (const [name, diff] of [['easy', 0.3], ['normal', 0.5]] as const) {
+    for (const [name, diff] of diffs) {
       const fu = newPass(); const fa = newPass(); const cu = newPass(); const ca = newPass(); const op = newPass();
       const tu = newPass();
       const oo = newPass();
       passEpisodes('fast', diff, seeds, fu, fa, tu, oo);
       passEpisodes('calm', diff, seeds, cu, ca, tu, oo);
+      const bu = newPass();
+      passEpisodes('bent', diff, Math.max(4, Math.round(seeds / 2)), bu, newPass());
       oppPasses(diff, seeds, op);
       const ai = newPass();
-      for (const k of ['n', 'ok', 'int', 'out', 'none', 'prog'] as const) ai[k] = fa[k] + ca[k];
+      for (const k of ['n', 'ok', 'int', 'out', 'none', 'prog', 'thr', 'thrOk', 'behind', 'unres'] as const) ai[k] = fa[k] + ca[k];
       ai.arr = [...fa.arr, ...ca.arr];
-      pass[name] = { userFast: passOut(fu), userCalm: passOut(cu), mates: passOut(ai), matesToUser: passOut(tu), opponents: passOut(op), opponentsOpenPlay: passOut(oo) };
+      pass[name] = { userFast: passOut(fu), userCalm: passOut(cu), userBent: passOut(bu), mates: passOut(ai), matesToUser: passOut(tu), opponents: passOut(op), opponentsOpenPlay: passOut(oo) };
     }
     out.pass = pass;
   }
   if (parts.includes('cross')) {
     const cross: Record<string, unknown> = {};
-    for (const [name, diff] of [['easy', 0.3], ['normal', 0.5]] as const) {
+    for (const [name, diff] of diffs) {
       const r: Record<string, unknown> = {};
       for (const m of ['fast', 'calm', 'calmHigh'] as const) {
         const c = newCross(); wingCross(m, diff, seeds * 2, c);

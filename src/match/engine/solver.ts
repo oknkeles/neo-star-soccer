@@ -5,7 +5,7 @@
 import type { BallState, KickParams, Vec2, Vec3 } from '../../core/types';
 import { clamp } from '../../core/util';
 import { BR, DRAG, DT, HL, HW } from './constants';
-import { computeLaunch, kickSpeed, maxSpeed, type Kicker, type KickSpec } from './kick';
+import { computeLaunch, kickSpeed, maxSpeed, naturalSpin, type Kicker, type KickSpec } from './kick';
 import { integrateBall, newAux, newReport, resetReport, type BallAux, type PhysEnv } from './physics';
 import type { PathSample } from './internal';
 import { hyp } from './geom';
@@ -93,6 +93,17 @@ export function atDistance(path: PathSample[], d: number): PathSample | null {
   return null;
 }
 
+/** Ball speed (m/s, horizontal) where the path passes horizontal distance `d` from its start. */
+export function speedAtDistance(path: PathSample[], d: number): number | null {
+  const s = path[0];
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1];
+    const b = path[i];
+    if (hyp(b.x - s.x, b.y - s.y) >= d) return b.t > a.t ? hyp(b.x - a.x, b.y - a.y) / (b.t - a.t) : null;
+  }
+  return null;
+}
+
 /** Power (0..1) that produces launch `speed` for this kicker / kick type. */
 export function powerForSpeed(k: Kicker, spec: Pick<KickSpec, 'kind' | 'isShot'>, speed: number, curl = 0): number {
   const vmax = maxSpeed(k.attrs, spec);
@@ -119,6 +130,42 @@ export function groundPass(env: PhysEnv, k: Kicker, from: Vec2, to: Vec2, arrive
   const sp = groundPassSpeed(env, d, arrive);
   const spec = { kind: 'ground' as const, isShot: false };
   return { dir: { x: dx / (d || 1), y: dy / (d || 1) }, power: powerForSpeed(k, spec, Math.min(sp, kickSpeed(k.attrs, { dir: { x: 1, y: 0 }, power: 1, loft: 0, curl: 0 }, spec))), loft: 0, curl: 0 };
+}
+
+/**
+ * A pass struck with side-spin (`curl`) that bends on its way and still finishes at `to`, arriving
+ * at about `arrive` m/s: the launch direction is turned against the bend (a few noise-free flight
+ * predictions), the power makes up for the speed the spin costs. `loft` > 0: a driven, bending
+ * ball at knee height (the spin acts fully in the air, then it skids on).
+ */
+export function curledPass(env: PhysEnv, k: Kicker, from: Vec3, to: Vec2, arrive: number, curl: number, loft = 0): KickParams {
+  const c = clamp(curl, -1, 1);
+  const base = groundPass(env, k, from, to, arrive);
+  if (Math.abs(c) < 0.02 && loft <= 0) return base;
+  const spec: KickSpec = { kind: 'ground', isShot: false, pressure: 0, difficulty: 0.5 };
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const d = hyp(dx, dy) || 1;
+  const want = Math.atan2(dy, dx);
+  const vmax = kickSpeed(k.attrs, { dir: { x: 1, y: 0 }, power: 1, loft: 0, curl: 0 }, spec);
+  let speed = Math.min(groundPassSpeed(env, d * (1 + 0.04 * Math.abs(c)), arrive) * (loft > 0 ? 0.94 : 1), vmax);
+  // (the bend turns the ball through about twice the launch offset: start half of it the other way)
+  let dir = rot({ x: dx / d, y: dy / d }, -c * 0.12);
+  let p: KickParams = { dir, power: powerForSpeed(k, spec, speed, c), loft, curl: c };
+  for (let it = 0; it < 5; it++) {
+    p = { dir, power: powerForSpeed(k, spec, speed, c), loft, curl: c };
+    const path = predictPath(launched(from, p, k, spec), env, clamp(d / 5 + 1, 1.5, 4.5), 4);
+    const at = atDistance(path, d);
+    if (!at) { speed = Math.min(vmax, speed * 1.12); continue; }
+    const ang = Math.atan2(at.y - from.y, at.x - from.x) - want;
+    dir = rot(dir, -ang);
+    // the bend costs pace (a longer way round): it still has to get there at the pace asked for
+    const v = speedAtDistance(path, d) ?? arrive;
+    const fix = clamp(arrive / Math.max(0.5, v), 0.9, 1.15);
+    speed = Math.min(vmax, speed * (1 + (fix - 1) * 0.6));
+    if (Math.abs(ang) < 0.003 && Math.abs(fix - 1) < 0.04) { p = { ...p, dir }; break; }
+  }
+  return { ...p, dir, power: powerForSpeed(k, spec, speed, c) };
 }
 
 function rot(v: Vec2, a: number): Vec2 {
@@ -201,13 +248,15 @@ export function solveLob(
     if (score < bestScore) { bestScore = score; best = { dir, power: p, loft, curl }; }
   }
   const sol = best ?? { dir, power: 0.7, loft: prefLoft, curl };
-  // lateral correction (curl, wind)
-  for (let it = 0; it < 3 && (curl !== 0 || env.windX !== 0 || env.windY !== 0); it++) {
+  // lateral correction (curl, the strike's natural spin, wind)
+  const swerve = curl !== 0 || env.windX !== 0 || env.windY !== 0 || Math.abs(naturalSpin({ ...sol, dir }, k, spec)) > 1.2;
+  for (let it = 0; it < 3 && swerve; it++) {
     const path = predictPath(launched(from, { ...sol, dir }, k, spec), env, 3.5, 2);
     const at = atDistance(path, d);
     if (!at) break;
     const ang = Math.atan2(at.y - from.y, at.x - from.x) - Math.atan2(dy, dx);
     dir = rot(dir, -ang);
+    if (Math.abs(ang) < 0.002) break;
   }
   return { ...sol, dir };
 }

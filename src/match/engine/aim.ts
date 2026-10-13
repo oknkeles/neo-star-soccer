@@ -12,8 +12,8 @@ import { GH, GW, HL, HW } from './constants';
 import { Engine } from './engine';
 import { hyp } from './geom';
 import type { Agent } from './internal';
-import { atDistance, groundPass, launched, predictPath, solveLob } from './solver';
-import { ledPass } from './ai';
+import { atDistance, curledPass, groundPass, launched, predictPath, solveLob, speedAtDistance } from './solver';
+import { interceptFor, ledPass } from './ai';
 import { deliverCross, inBoxArea, inCrossZone, type CrossStyle } from './cross';
 import { runTimeFor } from './locomotion';
 
@@ -75,7 +75,7 @@ interface Pick { m: Agent; at: Vec2; through: boolean }
  * Through ball to `at` on a runner's line: the slowest ball (dies into the space) that still
  * gets there about when he does.
  */
-export function throughParams(e: Engine, m: Agent, at: Vec2): KickParams {
+export function throughParams(e: Engine, m: Agent, at: Vec2, curl = 0): KickParams {
   const b = e.state.ball.pos;
   const k = e.kicker(e.user);
   const d = hyp(at.x - b.x, at.y - b.y);
@@ -83,33 +83,64 @@ export function throughParams(e: Engine, m: Agent, at: Vec2): KickParams {
   const tr = 0.1 + runTimeFor(Math.max(0, hyp(at.x - m.st.pos.x, at.y - m.st.pos.y) - 0.7), sp, m.topSpeed * (0.82 + 0.18 * m.st.stamina), m.accel);
   let best: KickParams | null = null;
   let bestV = Infinity;
+  const bent = Math.abs(curl) >= 0.08;
   for (const arrive of [3.5, 4.5, 5.5, 7, 9]) {
-    const p = groundPass(e.env, k, b, at, arrive);
+    const p = bent ? curledPass(e.env, k, b, at, arrive, curl) : groundPass(e.env, k, b, at, arrive);
     const spec = e.kickSpec(e.user, p, 'ground', false);
     const path = predictPath(launched({ x: b.x, y: b.y, z: b.z }, p, k, spec), e.env, clamp(d / 5 + 1, 1.5, 4.5), 4);
     const q = atDistance(path, d);
     const tb = q ? q.t : Infinity;
     // a touch early is fine (it rolls on into his path); late is not
-    const v = Math.abs(tb - (tr - 0.2)) + (tb > tr + 0.25 ? 3 : 0);
+    let v = Math.abs(tb - (tr - 0.2)) + (tb > tr + 0.25 ? 3 : 0);
+    // ...and nobody in a red shirt (or the keeper coming off his line) gets there before him
+    let tOpp = Infinity;
+    for (const o of e.agents) {
+      if (o.side === m.side || o.passive || o.stun > 0.4) continue;
+      tOpp = Math.min(tOpp, interceptFor(e, o, path, 0.6).t);
+    }
+    if (tOpp < tr + 0.1) v += 1.5 + (tr + 0.1 - tOpp);
     if (v < bestV) { bestV = v; best = p; }
   }
   return best ?? groundPass(e.env, k, b, at, 5);
 }
 
-function snapParams(e: Engine, pick: Pick, loft: number): KickParams {
+/** The bend kept from a drawn / Q-E curled pass (a straight-ish stroke stays a plain pass). */
+export function passCurl(curl: number): number {
+  return Math.abs(curl) < 0.08 ? 0 : Math.sign(curl) * Math.min(0.8, Math.abs(curl) * 0.85);
+}
+
+/**
+ * A pass bent with side-spin onto the same point a straight pass would go to: the pass that
+ * would be played (its target and pace) re-solved with the spin, so it swings round a man in the
+ * lane and still finishes at his feet / in his stride.
+ */
+export function bentPass(e: Engine, plain: KickParams, at: Vec2, curl: number): KickParams {
+  const b = e.state.ball.pos;
+  const k = e.kicker(e.user);
+  const spec = e.kickSpec(e.user, plain, 'ground', false);
+  const d = hyp(at.x - b.x, at.y - b.y);
+  // the plain ball's pace where it gets there
+  const path = predictPath(launched({ x: b.x, y: b.y, z: b.z }, plain, k, spec), e.env, clamp(d / 5 + 1, 1.5, 4.5), 4);
+  const arrive = clamp(speedAtDistance(path, d) ?? 6, 2.5, 12);
+  return curledPass(e.env, k, b, at, arrive, curl);
+}
+
+function snapParams(e: Engine, pick: Pick, loft: number, curl = 0): KickParams {
   const b = e.state.ball.pos;
   const from = { x: b.x, y: b.y, z: b.z };
   const k = e.kicker(e.user);
   const li = loftIndex(loft);
+  const c = passCurl(curl);
   if (li === 0) {
-    if (pick.through) return throughParams(e, pick.m, pick.at);
+    if (pick.through) return throughParams(e, pick.m, pick.at, c);
     // into his stride (to feet when he stands), solved against the real flight time
     const sp = hyp(pick.m.st.vel.x, pick.m.st.vel.y);
     // (the full solve: a firmer ball or a shorter lead when the plain one could be cut out)
-    return ledPass(e, e.user, pick.m, { feet: sp < 1.2, maxLead: 7 }).params;
+    const lp = ledPass(e, e.user, pick.m, { feet: sp < 1.2, maxLead: 7 });
+    return c ? bentPass(e, lp.params, lp.at, c) : lp.params;
   }
   // half: drops at his feet; high: a long ball that comes down just in front of him (chest / thigh)
-  return solveLob(e.env, k, from, pick.at, li === 1 ? 0.5 : 0.9, 0, li === 1 ? 0.34 : 0.5);
+  return solveLob(e.env, k, from, pick.at, li === 1 ? 0.5 : 0.9, c, li === 1 ? 0.34 : 0.5);
 }
 
 let snapCache: { key: string; params: KickParams } | null = null;
@@ -242,9 +273,10 @@ export function analyzeAim(engine: MomentEngine, raw: KickParams, opts: AimOptio
   let receiver: Agent | null = null;
   let snapped = false;
   let crossStyle: CrossStyle | null = null;
-  const assist = (opts.assist ?? true) && kind !== 'header' && Math.abs(params.curl) <= 0.35 && e.setPiece !== 'penalty';
   const cross = goalCrossing(path);
   const atGoal = !!cross && Math.abs(cross.y) < GW + 2 && cross.z < GH + 1;
+  // (a bent ball at goal is a curler, left alone; a bent pass keeps its bend — see snapParams)
+  const assist = (opts.assist ?? true) && kind !== 'header' && (Math.abs(params.curl) <= 0.35 || !atGoal) && e.setPiece !== 'penalty';
   const drawn = opts.drawnEnd ?? null;
   const b = e.state.ball.pos;
   const dir = e.user.dir;
@@ -272,8 +304,9 @@ export function analyzeAim(engine: MomentEngine, raw: KickParams, opts: AimOptio
   } else if (assist && !(atGoal && !drawn)) {
     const pick = pickReceiver(e, params, path, drawn);
     if (pick) {
-      const key = `${pick.m.i}|${pick.through ? 't' : ''}|${loftIndex(params.loft)}|${Math.round(pick.at.x * 4)}|${Math.round(pick.at.y * 4)}|${e.touchSeq}|${Math.round(b.x * 20)}|${Math.round(b.y * 20)}`;
-      const sp = snapCache && snapCache.key === key ? snapCache.params : snapParams(e, pick, params.loft);
+      const c = passCurl(params.curl);
+      const key = `${pick.m.i}|${pick.through ? 't' : ''}|${loftIndex(params.loft)}|${Math.round(pick.at.x * 4)}|${Math.round(pick.at.y * 4)}|${e.touchSeq}|${Math.round(b.x * 20)}|${Math.round(b.y * 20)}|${Math.round(c * 20)}`;
+      const sp = snapCache && snapCache.key === key ? snapCache.params : snapParams(e, pick, params.loft, c);
       snapCache = { key, params: sp };
       params = e.sanitize(sp);
       path = e.predictKick(params, maxTime);
@@ -287,8 +320,10 @@ export function analyzeAim(engine: MomentEngine, raw: KickParams, opts: AimOptio
     if (d > 3) {
       const k = e.kicker(e.user);
       const li = loftIndex(params.loft);
-      const sp = li === 0 ? groundPass(e.env, k, b, drawn, 3.5) : solveLob(e.env, k, { x: b.x, y: b.y, z: b.z }, drawn, 0.3, params.curl, li === 1 ? 0.34 : 0.5);
-      params = e.sanitize(li === 0 ? { ...params, power: sp.power } : sp);
+      const c = passCurl(params.curl);
+      // (a bent ball into space still finishes where the stroke ends)
+      const sp = li === 0 ? (c ? curledPass(e.env, k, b, drawn, 3.5, c) : groundPass(e.env, k, b, drawn, 3.5)) : solveLob(e.env, k, { x: b.x, y: b.y, z: b.z }, drawn, 0.3, params.curl, li === 1 ? 0.34 : 0.5);
+      params = e.sanitize(li === 0 && !c ? { ...params, power: sp.power } : sp);
       path = e.predictKick(params, maxTime);
     }
   }

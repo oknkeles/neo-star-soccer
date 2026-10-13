@@ -35,7 +35,7 @@ export function physEnv(w: Weather | undefined): PhysEnv {
   return {
     windX: Number.isFinite(wx) ? wx : 0,
     windY: Number.isFinite(wy) ? wy : 0,
-    restitution, rollDecel, bounceMu, spinDecay: 0.65, groundSpinDecay: 2.2,
+    restitution, rollDecel, bounceMu, spinDecay: 0.65, groundSpinDecay: 1.0,
   };
 }
 
@@ -103,9 +103,9 @@ function microStep(b: BallState, aux: BallAux, env: PhysEnv, h: number, rep: Ste
       const dec = env.rollDecel + DRAG * s * s;
       const ns = Math.max(0, s - dec * h);
       const sc = ns / s;
-      // side spin still swerves a rolling ball a little
-      const ax = MAGNUS * 0.3 * (-w.z * v.y);
-      const ay = MAGNUS * 0.3 * (w.z * v.x);
+      // side spin still swerves a rolling ball (an outside-of-the-boot pass bends on the grass)
+      const ax = MAGNUS * 0.8 * (-w.z * v.y);
+      const ay = MAGNUS * 0.8 * (w.z * v.x);
       v.x = v.x * sc + ax * h;
       v.y = v.y * sc + ay * h;
       w.z *= Math.exp(-env.groundSpinDecay * h);

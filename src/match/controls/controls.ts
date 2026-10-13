@@ -37,6 +37,8 @@ const DOUBLE_TAP = 0.32;
 const MOUSE_ACTIVE = 2.5;
 /** Pass cone around the running direction. */
 const PASS_CONE = (50 * Math.PI) / 180;
+/** Side-spin of a pass played with Q / E held (fast controls). */
+const PASS_CURL = 0.65;
 /** Holding F (without the ball) this long while running = ask for a through ball. */
 const THROUGH_HOLD = 0.3;
 
@@ -555,7 +557,9 @@ export class Controls {
   private pass(through: boolean, src: Src): void {
     const toward = src === 'mouse' || this.mouseActive() ? this.mouse.world : null;
     const pref = this.worldDir() ?? kickDir(this.engine, null);
-    const p = assistPass(this.engine, { pref, toward, through, cone: through ? undefined : PASS_CONE });
+    // Q / E held as he passes: a bent pass (outside / inside of the boot), still solved onto the man
+    const curl = ((this.keys.has('KeyQ') ? 1 : 0) - (this.keys.has('KeyE') ? 1 : 0)) * PASS_CURL;
+    const p = assistPass(this.engine, { pref, toward, through, cone: through ? undefined : PASS_CONE, curl });
     if (p) {
       this.send({ kind: 'kick', params: p });
       this.acted = this.clock;

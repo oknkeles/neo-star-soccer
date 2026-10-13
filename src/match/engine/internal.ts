@@ -156,6 +156,8 @@ export interface KickRec {
   user: boolean;
   /** Lofted delivery into the box (cross / corner). */
   cross: boolean;
+  /** A ball played in behind the defensive line into a runner's path. */
+  through?: boolean;
 }
 
 export interface PathSample { t: number; x: number; y: number; z: number }

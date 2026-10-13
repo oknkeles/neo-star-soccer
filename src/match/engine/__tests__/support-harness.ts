@@ -155,7 +155,12 @@ function episode(type: MomentType, seed: number, difficulty: number, variant: Va
       const sp = Math.hypot(u.st.vel.x, u.st.vel.y);
       if (sp > 1) call.minAlign = Math.min(call.minAlign, (u.st.vel.x * call.dir.x + u.st.vel.y * call.dir.y) / sp);
     }
-    if (call && t - call.t > 3.5) call = null;
+    if (call && t - call.t > 3.5) {
+      // why the call came to nothing: the carrier passed elsewhere, never passed, or the ball to him was lost
+      const kk = e.kicks.filter((x) => x.t >= call!.t && x.side === 'us' && x.by !== u.i);
+      why(kk.some((x) => x.target === u.i) ? 'callPassLost' : kk.length ? 'callElsewhere' : e.owner?.side === 'them' ? 'callLostBall' : 'callNoPass');
+      call = null;
+    }
     if (gg && !gg.kicked && k && k.t >= gg.t && e.agents[k.by].id === gg.mate && k.target === u.i) { gg.kicked = true; why('ggKick'); }
     if (gg && t - gg.t > 3.0) { if (!gg.kicked) why(e.owner?.side === 'them' || s.ball.lastTouchSide === 'them' ? 'ggLost' : 'ggNoKick'); gg = null; }
 

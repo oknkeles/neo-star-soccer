@@ -171,6 +171,49 @@ describe('calm aim: pass assist and continuity', () => {
     expect(tested).toBeGreaterThan(0);
   });
 
+  it('a bent stroke to a team-mate keeps its bend: solved with spin onto him, the preview curves and the pass arrives', () => {
+    let tested = 0;
+    for (const seed of [5, 6, 7, 8, 9, 11]) {
+      const s = setupPass(seed);
+      if (!s) continue;
+      const { e, mate } = s;
+      e.input({ kind: 'aimStart', freeze: true });
+      const b = e.state.ball.pos;
+      const to = { x: mate.pos.x, y: mate.pos.y };
+      const L = Math.hypot(to.x - b.x, to.y - b.y);
+      if (L < 10) continue;
+      // a stroke bulging ~2 m to the right of the line: the ball bends back left (+ curl)
+      const nx = (to.y - b.y) / L;
+      const ny = -(to.x - b.x) / L;
+      const ctrl = { x: (b.x + to.x) / 2 + nx * 4, y: (b.y + to.y) / 2 + ny * 4 };
+      const pts = stroke(b, ctrl, to);
+      const aim = new CalmAim(e, { dir: { x: 1, y: 0 }, power: 0.5, loft: 0, curl: 0 }, 'pass');
+      aim.begin(pts[0], 'mouse');
+      for (const p of pts.slice(1)) aim.extend(p);
+      const a = aim.analysis();
+      if (!a.snapped || a.receiverId !== mate.id) continue;
+      tested++;
+      expect(a.params.curl).toBeGreaterThan(0.2);
+      // the preview is the real curved flight: it leaves the straight line on the stroke's side
+      let side = 0;
+      for (const q of a.path) {
+        const along = ((q.x - b.x) * (to.x - b.x) + (q.y - b.y) * (to.y - b.y)) / L;
+        if (along > 1 && along < L - 1) side = Math.max(side, (q.x - b.x) * nx + (q.y - b.y) * ny);
+      }
+      expect(side).toBeGreaterThan(0.1);
+      expect(aim.end()).toBe(true);
+      e.input({ kind: 'kick', params: aim.params() });
+      let received = false;
+      for (let i = 0; i < 60 * 4 && !e.isFinished(); i++) {
+        e.step(1 / 60);
+        const o = e.state.ball.ownerId;
+        if (o && o !== user(e).id) { received = e.state.players.find((p) => p.id === o)?.side === 'us'; break; }
+      }
+      expect(received).toBe(true);
+    }
+    expect(tested).toBeGreaterThan(0);
+  });
+
   it('a drawn shot at the goal mouth reads as a shot', () => {
     const e = createMoment(makeSetup('one_on_one', { seed: 3, difficulty: 0.3 }));
     e.input({ kind: 'start' });

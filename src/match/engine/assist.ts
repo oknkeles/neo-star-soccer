@@ -12,9 +12,9 @@ import { distToGoal, hyp } from './geom';
 import type { Agent } from './internal';
 import { naturalCurlSign } from './kick';
 import { laneRisk, ledPass, openMates, passOptions } from './ai';
-import { throughParams } from './aim';
+import { bentPass, passCurl, throughParams } from './aim';
 import { deliverCross, inBoxArea, inCrossZone } from './cross';
-import { atDistance, groundPass, launched, predictPath, solveLob, solveShot } from './solver';
+import { atDistance, curledPass, groundPass, launched, predictPath, solveLob, solveShot } from './solver';
 
 export interface ShotIntent {
   /** 0..1 how long the button was held (power). */
@@ -38,6 +38,8 @@ export interface PassIntent {
   through?: boolean;
   /** Only team-mates within this angle (rad) of `pref`; falls back to the most open one ahead. */
   cone?: number;
+  /** −1..1 side-spin asked for (Q / E held): the pass bends and is solved to finish at him all the same. */
+  curl?: number;
 }
 
 export interface DirShotIntent {
@@ -408,13 +410,18 @@ export function assistPass(engine: MomentEngine, intent: PassIntent): KickParams
   }
   const k = e.kicker(e.user);
   const from = ballFrom(e);
-  if (pick.lofted) return solveLob(e.env, k, from, pick.at, intent.through ? 0.4 : 0.9, 0, 0.42);
+  const c = passCurl(intent.curl ?? 0);
+  if (pick.lofted) return solveLob(e.env, k, from, pick.at, intent.through ? 0.4 : 0.9, c, 0.42);
   const m = pick.id ? e.agents.find((a) => a.id === pick.id) ?? null : null;
-  if (m && intent.through) return throughParams(e, m, pick.at);
+  if (m && intent.through) return throughParams(e, m, pick.at, c);
   // into his stride (to feet when he stands), solved against the real flight time
-  if (m) return ledPass(e, e.user, m, { quick: true, feet: hyp(m.st.vel.x, m.st.vel.y) < 1.2, maxLead: 7 }).params;
+  if (m) {
+    const lp = ledPass(e, e.user, m, { quick: true, feet: hyp(m.st.vel.x, m.st.vel.y) < 1.2, maxLead: 7 });
+    return c ? bentPass(e, lp.params, lp.at, c) : lp.params;
+  }
   const dist = hyp(pick.at.x - b.x, pick.at.y - b.y);
-  return groundPass(e.env, k, from, pick.at, clamp(4.5 + dist * 0.1, 5.5, 8.5));
+  const arrive = clamp(4.5 + dist * 0.1, 5.5, 8.5);
+  return c ? curledPass(e.env, k, from, pick.at, arrive, c) : groundPass(e.env, k, from, pick.at, arrive);
 }
 
 /** Where a ball sent along `d` from `b` crosses the box most centrally (6–36 m away), or null. */

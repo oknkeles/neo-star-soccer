@@ -27,6 +27,8 @@ export interface ScriptAction {
   z?: number;
   curl?: number;
   done: boolean;
+  /** Cross: touches taken to get the ball out from a defender in the way (≤ 4). */
+  delays?: number;
 }
 
 export interface MomentScript { actions: ScriptAction[] }
@@ -474,7 +476,19 @@ export function scriptTick(e: Engine): void {
       // a real cross: into the space he attacks, away from his marker (wound up)
       const near = { x: to.st.pos.x + to.dir * 1.2, y: to.st.pos.y * 0.9 };
       const prefer = (act.z ?? 1.9) > 1.5 ? (e.rng.chance(0.5) ? 'drive' : 'float') : 'whip';
-      void b;
+      const plan = deliverCross(e, by, to, { near, prefer });
+      // a defender stands in the way of every delivery: a touch down the line (or inside) first
+      if (plan.blocked && (act.delays ?? 0) < 3) {
+        act.delays = (act.delays ?? 0) + 1;
+        act.done = false;
+        act.at = s.time + 0.22;
+        const blk = e.nearestOpp(by);
+        const sy = Math.sign(b.y) || 1;
+        const inside = !!blk.o && (blk.o.st.pos.x - b.x) * by.dir > 2 && Math.abs(blk.o.st.pos.y) > Math.abs(b.y) - 1;
+        by.target = { x: clamp(b.x + by.dir * (inside ? 1 : 4), -HL + 2, HL - 2.5), y: clamp(b.y - sy * (inside ? 3 : 0.5), -HW + 1.5, HW - 1.5) };
+        by.urgency = 0.75;
+        continue;
+      }
       e.windUp(by, 'kick', () => {
         const d = deliverCross(e, by, to, { near, prefer });
         e.execKick(by, d.params, { target: d.to ? d.to.i : to.i, isShot: false, cross: true });

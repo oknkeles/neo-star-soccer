@@ -39,7 +39,10 @@ const gkSkill = (a: Agent) => clamp(a.a.goalkeeping, 1, 99) / 99;
 
 /** Sharpness of the opposing keeper scales with difficulty; ours is neutral. */
 function sharp(e: Engine, a: Agent): number {
-  return a.side === 'them' ? clamp(e.setup.difficulty, 0, 1) - 0.5 - 0.42 * e.ease : 0;
+  if (a.side !== 'them') return 0;
+  const d = clamp(e.setup.difficulty, 0, 1);
+  // (quicker reactions on hard)
+  return d - 0.5 - 0.42 * e.ease + 0.12 * clamp((d - 0.6) / 0.3, 0, 1);
 }
 
 function diveSpeed(e: Engine, a: Agent): number {

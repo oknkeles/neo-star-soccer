@@ -101,6 +101,15 @@ export function loadRun(e: Engine, a: Agent, role: BoxRole, ball: Vec2): void {
   const dir = a.dir;
   const sy = Math.sign(ball.y) || 1;
   const p = loadSpot(role, dir, sy);
+  // on the blind side of the man nearest the spot: behind his shoulder, away from the ball
+  const near = e.nearestOpp(a, p);
+  if (near.o && near.d < 3.5) {
+    const ox = near.o.st.pos.x;
+    const oy = near.o.st.pos.y;
+    const bl = hyp(ox - ball.x, oy - ball.y) || 1;
+    p.x = ox + ((ox - ball.x) / bl) * 1.4 - dir * 0.6;
+    p.y = oy + ((oy - ball.y) / bl) * 1.4;
+  }
   const line = e.offsideX(a.side) * dir;
   const x = dir * Math.min(p.x * dir, line - 0.7);
   a.target = { x: clamp(x, -HL + 2, HL - 2), y: clamp(p.y, -HW + 2, HW - 2) };
@@ -170,7 +179,13 @@ export function crossParams(e: Engine, k: Agent, to: Vec2, style: CrossStyle): K
   return solveLob(e.env, e.kicker(k), { x: b.x, y: b.y, z: b.z }, to, st.zAt, curl, st.pref, st.lofts);
 }
 
-export interface CrossPlan { params: KickParams; to: Agent | null; at: Vec2; style: CrossStyle; margin: number }
+export interface CrossPlan {
+  params: KickParams; to: Agent | null; at: Vec2; style: CrossStyle; margin: number;
+  /** The chosen delivery's real flight reaches the runner before any defender / the keeper. */
+  clean?: boolean;
+  /** Every delivery checked is cut out by a defender close to the crosser (within ~7 m). */
+  blocked?: boolean;
+}
 
 /**
  * Pick the delivery: for each attacker (his box run's zone, or where he is heading) and style,
@@ -208,6 +223,12 @@ export function deliverCross(e: Engine, a: Agent, pref?: Agent | null, opts: { n
   const styles: CrossStyle[] = opts.style ? [opts.style] : byline ? ['cutback', 'whip', 'drive', 'float'] : ['whip', 'drive', 'float'];
   const ranked: { m: Agent | null; p: Vec2; style: CrossStyle; v: number; margin: number; tm: number }[] = [];
   const gk = a.side === 'us' ? e.gkThem : e.gkUs;
+  // defenders packed in front of goal: the ball pulled back to the edge of it is the one that is on
+  let crowd = 0;
+  for (const o of e.agents) {
+    if (o.side === a.side || o.isGK || o.passive) continue;
+    if ((o.st.pos.x - dir * HL) * -dir < 8 && Math.abs(o.st.pos.y) < 10) crowd++;
+  }
   for (const c of cands) {
     const d = hyp(c.p.x - b.x, c.p.y - b.y);
     if (d < 6 || d > 45) continue;
@@ -239,6 +260,7 @@ export function deliverCross(e: Engine, a: Agent, pref?: Agent | null, opts: { n
       if (opts.near) v -= hyp(c.p.x - opts.near.x, c.p.y - opts.near.y) * 0.09;
       if (c.m.isUser) v += 0.25;
       if (style === 'whip') v += 0.05;
+      if (style === 'cutback') v += Math.max(0, crowd - 2) * 0.12;
       if (style === opts.prefer) v += 0.15;
       // closer to goal, more central = a better chance
       v -= Math.abs(c.p.y) * 0.02 + Math.max(0, (dir * HL - c.p.x) * dir - 6) * 0.025;
@@ -252,6 +274,9 @@ export function deliverCross(e: Engine, a: Agent, pref?: Agent | null, opts: { n
   }
   let best = ranked[0];
   let params: KickParams | null = null;
+  let clean = false;
+  let near = 0;
+  let checked = 0;
   if (!opts.plan) {
     // the real flight of the best few: nobody may cut it out on the way (the first defender, the
     // keeper) before the runner gets there
@@ -267,7 +292,7 @@ export function deliverCross(e: Engine, a: Agent, pref?: Agent | null, opts: { n
       if (order.length < 2 || !styleSeen.has(c.style)) { seen.add(key); styleSeen.add(c.style); order.push(c); }
       if (order.length >= 6) break;
     }
-    for (const c of order) {
+    const check = (c: (typeof ranked)[number]): { v: number; p: KickParams; lost: number; lostNear: boolean } => {
       const at = { x: clamp(c.p.x, -HL + 1, HL - 1), y: clamp(c.p.y, -HW + 1, HW - 1) };
       const p = crossParams(e, a, at, c.style);
       const spec = e.kickSpec(a, p, 'ground', false);
@@ -277,17 +302,49 @@ export function deliverCross(e: Engine, a: Agent, pref?: Agent | null, opts: { n
       for (const q of path) { const dd = hyp(q.x - at.x, q.y - at.y); if (dd < bd) { bd = dd; tb = q.t; } }
       const tArr = Math.max(c.tm, tb);
       let lost = 0;
+      let lostNear = false;
       for (const o of e.agents) {
         if (o.side === a.side || o.passive || o.stun > 0.3) continue;
-        const r = Math.min(interceptFor(e, o, path, o.isGK ? 2.55 : Math.min(e.headReach(o), 2.3)).t, o.isGK ? Infinity : bodyT(o, path));
-        if (r < tArr + (o.isGK ? -0.05 : 0.05)) lost = Math.max(lost, tArr - r + 0.2);
+        // (every defender under the flight, read sharply: they go for it at once)
+        const r = Math.min(interceptFor(e, o, path, o.isGK ? 2.55 : Math.min(e.headReach(o), 2.3), true, !o.isGK).t, o.isGK ? Infinity : bodyT(o, path));
+        if (r < tArr + (o.isGK ? -0.05 : 0.05)) {
+          lost = Math.max(lost, tArr - r + 0.2);
+          if (!o.isGK && hyp(o.st.pos.x - b.x, o.st.pos.y - b.y) < 7 && r < 0.45) lostNear = true;
+        }
       }
-      const v = c.v - (lost > 0 ? 1.5 + lost : 0);
-      if (v > bestV) { bestV = v; best = c; params = p; }
-      if (lost === 0) break;
+      return { v: c.v - (lost > 0 ? 1.5 + lost : 0), p, lost, lostNear };
+    };
+    for (const c of order) {
+      const r = check(c);
+      checked++;
+      if (r.lostNear) near++;
+      if (r.v > bestV) { bestV = r.v; best = c; params = r.p; clean = r.lost === 0; }
+      if (r.lost === 0) break;
+    }
+    // the man in front blocks every delivery: bend it around him — the same balls at a slightly
+    // different angle (toward the far post / the near post), or pulled back
+    if (!clean && checked > 0 && near === checked) {
+      const alts: (typeof ranked)[number][] = [];
+      for (const c of order.slice(0, 3)) {
+        const dx = c.p.x - b.x;
+        const dy = c.p.y - b.y;
+        for (const ang of [0.24, -0.24, 0.45, -0.45]) {
+          const ca = Math.cos(ang);
+          const sa = Math.sin(ang);
+          const q = { x: b.x + dx * ca - dy * sa, y: b.y + dx * sa + dy * ca };
+          if (!inBoxArea(q, dir) || q.x * dir > HL - 3) continue;
+          alts.push({ ...c, p: q, v: c.v - Math.abs(ang) * 0.6 - hyp(q.x - c.p.x, q.y - c.p.y) * 0.03 });
+        }
+      }
+      if (b.x * dir > HL - 20) alts.push({ m: null, p: { x: dir * (HL - 11), y: sy * 2 }, style: 'cutback', v: best.v - 0.4, margin: 0, tm: 0 });
+      alts.sort((p, q) => q.v - p.v);
+      for (const c of alts.slice(0, 6)) {
+        const r = check(c);
+        if (r.lost === 0 && r.v > bestV - 0.6) { bestV = r.v; best = c; params = r.p; clean = true; near--; break; }
+      }
     }
   }
   // where he meets it: the zone point, a step ahead of the runner's approach
   const at = { x: clamp(best.p.x, -HL + 1, HL - 1), y: clamp(best.p.y, -HW + 1, HW - 1) };
-  return { params: params ?? (opts.plan ? { dir: { x: 1, y: 0 }, power: 0.5, loft: 0.3, curl: 0 } : crossParams(e, a, at, best.style)), to: best.m, at, style: best.style, margin: best.margin };
+  return { params: params ?? (opts.plan ? { dir: { x: 1, y: 0 }, power: 0.5, loft: 0.3, curl: 0 } : crossParams(e, a, at, best.style)), to: best.m, at, style: best.style, margin: best.margin, clean, blocked: checked > 0 && near === checked };
 }

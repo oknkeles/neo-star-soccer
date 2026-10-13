@@ -49,6 +49,13 @@ describe('feel harness', () => {
       expect(p.userCalm.hard).toBeLessThanOrEqual(0.12);
       expect(p.userCalm.previewErr).toBeLessThan(1);
       expect(p.matesToUser.completion).toBeGreaterThanOrEqual(0.7);
+      // team-mates to each other: real lane checks, recycling under pressure, still going forward
+      // (the first casual tuning had 0.55 / 0.74 going backwards)
+      expect(p.mates.completion).toBeGreaterThanOrEqual(0.68);
+      expect(p.mates.prog).toBeGreaterThan(0);
+      // a bent drawn pass keeps its curl and is solved onto the man: no worse than a straight one
+      expect(p.userBent.completion).toBeGreaterThanOrEqual(0.7);
+      expect(p.userBent.previewErr).toBeLessThan(1);
     }
   }, 300000);
 
@@ -59,7 +66,9 @@ describe('feel harness', () => {
     const n = m.cross.normal;
     expect(e.recv_calm.reach).toBeGreaterThanOrEqual(0.45);
     expect(e.recv_calm.shot).toBeGreaterThanOrEqual(0.45);
-    expect(n.recv_calm.reach).toBeGreaterThanOrEqual(0.2);
+    // crosses to the user on normal: he wins most of them now (0.32 in the first casual tuning)
+    expect(n.recv_calm.reach).toBeGreaterThanOrEqual(0.5);
+    expect(n.recv_calm.shot).toBeGreaterThanOrEqual(0.4);
     expect(n.wing_calmHigh.reach).toBeGreaterThanOrEqual(0.25);
   }, 300000);
 

@@ -209,7 +209,7 @@ export class Engine {
         accel: 6.8 + 3.8 * (clamp(a.acceleration, 1, 99) / 99),
         cool: 0, stun: 0, think: 0.1 + 0.02 * (i % 10), touch: 0, touchPeriod: 0.5, jump: 0, markIdx: -1, receivedFrom: -1,
         carryT: 0, runT: 0, runTarget: null, keeper: isGK ? newKeeperMem() : null,
-        reaction: clamp(0.3 - 0.12 * (a.positioning / 99) - (side === 'them' ? 0.11 * (diff - 0.5) - 0.08 * this.ease : 0), 0.12, 0.52),
+        reaction: clamp(0.3 - 0.12 * (a.positioning / 99) - (side === 'them' ? 0.11 * (diff - 0.5) - 0.07 * this.ease : 0), 0.12, 0.52),
         animLock: 0, noise: side === 'them' ? 1.25 - 0.5 * diff : isUser ? 1 - 0.35 * this.ease : 1, eit: Infinity, eitPoint: null, wall: false, passive: false,
       };
       this.agents.push(agent);
@@ -375,7 +375,7 @@ export class Engine {
   // ───────────────────────── kick plumbing ─────────────────────────
 
   kicker(a: Agent): Kicker {
-    return { attrs: a.a, foot: a.spec.foot, weakFoot: a.spec.weakFoot, stamina: a.st.stamina };
+    return { attrs: a.a, foot: a.spec.foot, weakFoot: a.spec.weakFoot, stamina: a.st.stamina, facing: a.st.facing };
   }
 
   sanitize(p: KickParams): KickParams {
@@ -456,7 +456,7 @@ export class Engine {
     if (this.owner === a) return { ok: true, kind: 'ground' };
     if (this.owner) return { ok: false, kind: 'ground' };
     // casual play: the user's one-touch reach is a little more forgiving
-    const d = hyp(b.pos.x - a.st.pos.x, b.pos.y - a.st.pos.y) - (a.isUser ? 0.3 * this.ease : 0);
+    const d = hyp(b.pos.x - a.st.pos.x, b.pos.y - a.st.pos.y) - (a.isUser ? 0.27 * this.ease : 0);
     const z = b.pos.z;
     if (z <= 0.45 && d <= 1.0) return { ok: true, kind: 'ground' };
     if (z < 1.25 && d <= 1.1) return { ok: true, kind: 'volley' };
@@ -468,7 +468,7 @@ export class Engine {
   }
 
   /** Strike the ball (any agent). Returns the kick record. */
-  execKick(a: Agent, raw: KickParams, opts: { kind?: KickKind; isShot?: boolean; target?: number; setPiece?: boolean; cross?: boolean } = {}): KickRec {
+  execKick(a: Agent, raw: KickParams, opts: { kind?: KickKind; isShot?: boolean; target?: number; setPiece?: boolean; cross?: boolean; through?: boolean } = {}): KickRec {
     const s = this.state;
     const b = s.ball;
     const p = this.sanitize(raw);
@@ -507,7 +507,7 @@ export class Engine {
     const rec: KickRec = {
       id: this.kicks.length, by: a.i, side: a.side, t: s.time, kind, isShot: spec.isShot, target: opts.target ?? -1, from,
       xg: 0, offside: [], dir: a.dir, result: 'pending', onTarget: false, assistBy: -1, setPiece: !!opts.setPiece,
-      curl: p.curl, completed: false, oppTouched: false, user: a.isUser, cross: !!opts.cross,
+      curl: p.curl, completed: false, oppTouched: false, user: a.isUser, cross: !!opts.cross, through: !!opts.through,
     };
     if (spec.isShot) {
       const path = predictPath(b, this.env, 3, 2);
@@ -914,7 +914,7 @@ export class Engine {
     const vr = hyp(hyp(rvx, rvy), b.vel.z * 0.6);
     const ft = clamp(a.a.firstTouch, 1, 99) / 99;
     const pr = this.pressureOn(a);
-    const diff = Math.max(0, vr - 5.5) / (10 + 18 * ft) + (b.pos.z > 0.6 ? 0.18 : 0) + pr * 0.12 * (1.2 - ft) + (a.side === 'them' ? 0.05 * (0.5 - this.setup.difficulty) : 0) - (a.isUser ? 0.1 + 0.16 * this.ease : 0)
+    const diff = Math.max(0, vr - 5.5) / (10 + 18 * ft) + (b.pos.z > 0.6 ? 0.18 : 0) + pr * 0.12 * (1.2 - ft) + (a.side === 'them' ? 0.05 * (0.5 - this.setup.difficulty) : 0) - (a.isUser ? 0.08 + 0.15 * this.ease : 0)
       // team-mates meeting the user's pass at speed: a cleaner first touch
       - (a.side === 'us' && !a.isUser && this.lastKick?.user && !this.lastKick.isShot ? 0.12 + 0.2 * this.ease : 0)
       // ...and the user cushions team-mates' passes more easily on easy / normal
@@ -1161,7 +1161,8 @@ export class Engine {
       // AI hysteresis: once a player has arrived he stands until his (re-planned) spot drifts away,
       // instead of shuffling back and forth around it every re-plan
       let go = d > 0.08;
-      if (!a.isUser && a.urgency < 0.95) {
+      // (not while meeting the ball: a receiver steps right onto its line, no "close enough")
+      if (!a.isUser && a.urgency < 0.95 && a.duty !== 'receive' && a.duty !== 'attackBall' && a.duty !== 'chase') {
         if (a.settled) go = d > 0.9;
         a.settled = !go || d < 0.35;
         if (a.settled && d < 0.35) go = false;
@@ -1530,7 +1531,10 @@ export class Engine {
       // (a cross played to the user: his marker is a beat slower to it on easy / normal)
       const crossIn = a.side === 'them' && !!k && k.cross && k.side === 'us' && s.time - k.t < 3;
       const crossUser = crossIn && !!k && k.target === this.user.i;
-      if (!a.isUser && z > 1.25 && z <= this.headReach(a) && d < 0.85 * (crossIn ? 1 - (crossUser ? 0.9 : 0.75) * this.ease : 1) && speed > 4) {
+      // a team-mate's lofted pass to him with nobody near: he lets it drop and takes it down
+      // instead of nodding it on
+      const letDrop = !a.isUser && z > 1.75 && !!k && k.side === a.side && k.target === a.i && !k.isShot && !k.cross && !k.oppTouched && this.nearestOpp(a).d > 2.5;
+      if (!a.isUser && !letDrop && z > 1.25 && z <= this.headReach(a) && d < 0.85 * (crossIn ? 1 - (crossUser ? 0.9 : 0.75) * this.ease : 1) && speed > 4) {
         if (d < bestD) { bestD = d; best = a; }
         continue;
       }
@@ -1545,6 +1549,31 @@ export class Engine {
     }
     if (!best) return;
     if (!best.isUser && b.pos.z > 1.25) {
+      // a team-mate's lofted pass dropping to him with nobody challenging: chest it down
+      // (a header only when he has to fight for it or it is above chest height)
+      if (k && !k.isShot && !k.cross && !k.oppTouched && k.side === best.side && k.target === best.i && b.pos.z < 1.75 && this.nearestOpp(best).d > 1.25) {
+        this.control(best);
+        return;
+      }
+      // a contested ball in the air: the duel decides who gets there (jumping, heading, strength,
+      // height and the run at it), not simply who stands nearest
+      if (!best.isGK && b.pos.z > 1.4) {
+        const rival = this.aerialRival(best);
+        if (rival) {
+          if (this.duelKey !== this.touchSeq) {
+            this.duelKey = this.touchSeq;
+            this.duelWon = this.rng.chance(this.duelP(best, rival)) ? best : rival;
+          }
+          if (this.duelWon === rival) {
+            // beaten in the air: he gets nothing on it (the winner meets it — the user with his strike)
+            best.cool = Math.max(best.cool, 0.4);
+            best.jump = 0.5;
+            if (!rival.isUser) aiHeader(this, rival);
+            return;
+          }
+          rival.cool = Math.max(rival.cool, 0.35);
+        }
+      }
       // the AI meets an aerial ball: header (shot, clearance or knock-down)
       aiHeader(this, best);
       return;
@@ -1558,6 +1587,44 @@ export class Engine {
       }
     }
     this.control(best);
+  }
+
+  /** Aerial duel of the current flight (touchSeq it was decided for) and its winner. */
+  private duelKey = -1;
+  private duelWon: Agent | null = null;
+
+  /** An opponent close enough to the ball in the air to challenge `a` for it (null = none). */
+  private aerialRival(a: Agent): Agent | null {
+    const b = this.state.ball.pos;
+    let best: Agent | null = null;
+    let bd = 1.35;
+    for (const o of this.agents) {
+      if (o.side === a.side || o.isGK || o.passive || o.stun > 0 || o.cool > 0 || o.wall) continue;
+      if (b.z > this.headReach(o) + 0.1) continue;
+      const d = hyp(b.x - o.st.pos.x, b.y - o.st.pos.y);
+      if (d < bd) { bd = d; best = o; }
+    }
+    return best;
+  }
+
+  /** 0..1 chance that `a` wins the header against `o`: jumping, heading, strength, height, the run at the ball and position. */
+  private duelP(a: Agent, o: Agent): number {
+    const b = this.state.ball;
+    const rating = (x: Agent): number => {
+      const h = clamp((x.spec.appearance?.height ?? 180) / 100, 1.6, 2.05);
+      const dx = b.pos.x - x.st.pos.x;
+      const dy = b.pos.y - x.st.pos.y;
+      const d = hyp(dx, dy) || 1;
+      // attacking the ball (moving onto it) beats standing and waiting for it
+      const run = clamp((x.st.vel.x * dx + x.st.vel.y * dy) / d, -2, 6);
+      return (0.32 * x.a.jumping + 0.3 * x.a.heading + 0.2 * x.a.strength) / 99 + (h - 1.8) * 0.5 + run * 0.035 - d * 0.12;
+    };
+    let p = 0.5 + 1.25 * (rating(a) - rating(o));
+    // casual play: the user (and his team-mates attacking his side's cross) a little more often
+    const k = this.lastKick;
+    const uSide = this.user.side;
+    if (k && k.cross && k.side === uSide) p += (a.side === uSide ? 1 : -1) * 0.1 * this.ease;
+    return clamp(p, 0.15, 0.85);
   }
 
   private block(a: Agent, dx: number, dy: number, d: number): void {
