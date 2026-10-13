@@ -805,7 +805,8 @@ export type ControlCommand =
   | { kind: 'aftertouch'; spin: number }            // -1..1 extra curl shortly after the kick
   | { kind: 'callForBall'; through: boolean }
   | { kind: 'tackle'; slide: boolean }
-  | { kind: 'skip' };                               // auto-resolve the rest of the moment
+  | { kind: 'skip' }                                // auto-resolve the rest of the moment
+  | { kind: 'start' };                              // leave the 'press any key' hold at the start of a moment
 
 export type AnimState =
   | 'idle' | 'run' | 'sprint' | 'dribble' | 'kick' | 'pass' | 'header' | 'volley'
@@ -854,6 +855,11 @@ export interface MomentState {
   banner: string | null;      // big overlay text e.g. 'GOOOL!' (localized)
   outcome: MomentOutcome | null;
   drill?: { attempt: number; attempts: number; score: number };
+  /**
+   * True while the moment waits for the player before anything moves ("press any key to begin").
+   * The engine does not advance until a 'start' (or any other) command arrives.
+   */
+  awaitingStart?: boolean;
 }
 
 export type MomentEvent =
