@@ -10,6 +10,8 @@
  *  - rootRoll > 0        : whole body rolls to the player's LEFT (dives)
  */
 import type { AnimState } from '../../core/types';
+import { KICK_CONTACT } from '../engine/constants';
+import { strideLen } from '../engine/locomotion';
 
 export interface Pose {
   rootY: number;
@@ -50,7 +52,12 @@ export interface PoseInput {
   kickFoot: 'L' | 'R';
   /** 0..1 per player: picks a celebration style, adds personality. */
   variant: number;
+  /** Longitudinal acceleration (m/s², + = speeding up): the body leans into it. */
+  accel?: number;
 }
+
+/** Leg length (hip to sole) of the rig at scale 1. */
+const LEG = 0.89;
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const smooth = (a: number, b: number, v: number) => {
@@ -59,60 +66,94 @@ const smooth = (a: number, b: number, v: number) => {
 };
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 
-/** Stride length (m) per full cycle at a given speed — feet roughly plant without sliding. */
-export function strideLength(speed: number): number {
-  return 1.1 + Math.min(1.4, speed * 0.17);
+/**
+ * Stride length (m) per full cycle at a given speed (the engine's dribble touches use the same
+ * rhythm). Dribbling: shorter, quicker steps.
+ */
+export function strideLength(speed: number, dribble = false): number {
+  return strideLen(speed) * (dribble ? 0.85 : 1);
 }
 
 /** Advance the run-cycle phase for a frame. */
-export function advanceCycle(cycle: number, speed: number, dt: number): number {
-  const next = cycle + (speed * dt / strideLength(speed)) * Math.PI * 2;
+export function advanceCycle(cycle: number, speed: number, dt: number, dribble = false): number {
+  const next = cycle + (speed * dt / strideLength(speed, dribble)) * Math.PI * 2;
   return next > 1e4 ? next % (Math.PI * 2) : next;
 }
 
+/**
+ * Hip swing (rad) whose foot travel matches the stride at this speed: a planted foot moves back
+ * exactly as fast as the body moves forward (no sliding). Fades out toward a standstill.
+ */
+export function hipAmplitude(speed: number, dribble = false): number {
+  const stride = strideLength(speed, dribble);
+  return Math.asin(Math.min(0.72, stride / (4 * LEG))) * smooth(0.1, 1.4, speed);
+}
+
+/**
+ * Walk / jog / run / sprint as one continuous gait driven by the real speed (no pops when the
+ * animation state switches between run and sprint): stride from the speed, knee lift, arm drive
+ * and forward lean grow with effort; acceleration tips the body forward, braking sits it back.
+ */
 function locomotion(p: Pose, i: PoseInput, style: 'run' | 'sprint' | 'dribble'): void {
-  const a = clamp01(i.speed / (style === 'sprint' ? 8.5 : 7));
-  const amp = style === 'sprint' ? 1.0 : style === 'dribble' ? 0.72 : 0.86;
-  const A = a * amp;
+  const sp = Math.max(0, i.speed);
+  const drib = style === 'dribble';
+  const a = clamp01(sp / 8.5);
+  const A = a * (drib ? 0.85 : 1);
+  const hip = hipAmplitude(sp, drib);
   const s = Math.sin(i.cycle);
   const c = Math.cos(i.cycle);
-  p.hipL = s * 0.78 * A;
-  p.hipR = -s * 0.78 * A;
-  p.kneeL = A * (0.18 + 1.25 * Math.max(0, c)) + 0.05;
-  p.kneeR = A * (0.18 + 1.25 * Math.max(0, -c)) + 0.05;
-  p.shoulderL = -s * 0.7 * A;
-  p.shoulderR = s * 0.7 * A;
-  p.elbowL = 0.4 + 1.0 * a;
-  p.elbowR = 0.4 + 1.0 * a;
-  p.shoulderOutL = 0.12 + (style === 'dribble' ? 0.18 : 0);
-  p.shoulderOutR = 0.12 + (style === 'dribble' ? 0.18 : 0);
-  p.spine = 0.05 + (style === 'sprint' ? 0.3 : style === 'dribble' ? 0.22 : 0.16) * a;
-  p.rootY = A * (0.045 * Math.cos(2 * i.cycle) - 0.03);
+  p.hipL = s * hip;
+  p.hipR = -s * hip;
+  // knee: a soft bend while walking, a high heel recovery in a sprint
+  const lift = 0.25 + 1.15 * smooth(1.5, 8, sp);
+  p.kneeL = 0.06 + 0.16 * A + lift * hip * 1.3 * Math.max(0, c);
+  p.kneeR = 0.06 + 0.16 * A + lift * hip * 1.3 * Math.max(0, -c);
+  p.shoulderL = -s * (0.25 + 0.55 * A) * Math.min(1, hip * 2);
+  p.shoulderR = s * (0.25 + 0.55 * A) * Math.min(1, hip * 2);
+  p.elbowL = 0.35 + 1.05 * A;
+  p.elbowR = 0.35 + 1.05 * A;
+  p.shoulderOutL = 0.12 + (drib ? 0.18 : 0);
+  p.shoulderOutR = 0.12 + (drib ? 0.18 : 0);
+  const lean = Math.max(-0.12, Math.min(0.2, (i.accel ?? 0) * 0.022));
+  p.spine = 0.05 + 0.24 * smooth(1.5, 9, sp) + (drib ? 0.08 : 0) + lean;
+  p.rootPitch = lean * 0.3;
+  p.rootY = A * (0.045 * Math.cos(2 * i.cycle) - 0.03) - (drib ? 0.02 : 0);
   p.twist = s * 0.12 * A;
   p.head = -p.spine * 0.6;
 }
 
+/**
+ * Kick / pass / volley / tackle on a timeline whose foot-ball contact is at KICK_CONTACT: the
+ * wind-up (leg drawn back) before it — AI strikes wind up before the ball leaves, the user's
+ * start just before contact — then the swing through the ball and the follow-through.
+ */
 function kickPose(p: Pose, i: PoseInput, kind: 'kick' | 'pass' | 'volley' | 'tackle'): void {
   const left = i.kickFoot === 'L';
   const t = i.t;
-  // Timeline (s): wind-up → strike → follow-through → settle.
-  const fast = kind === 'pass' ? 0.8 : 1;
-  const wind = 0.16 * fast;
-  const strike = 0.3 * fast;
-  const settle = 0.75 * fast;
+  const C = KICK_CONTACT[kind];
+  const wind = C * 0.62;
+  const follow = C + (kind === 'pass' ? 0.1 : 0.13);
+  const settle = C + (kind === 'pass' ? 0.42 : 0.5);
   let hip: number;
   let knee: number;
-  const swingTop = kind === 'volley' ? 1.75 : kind === 'pass' ? 0.95 : kind === 'tackle' ? 1.15 : 1.35;
+  const back = kind === 'pass' ? -0.55 : -0.8;
+  const swingTop = kind === 'volley' ? 1.75 : kind === 'pass' ? 0.95 : kind === 'tackle' ? 1.15 : 1.4;
+  const contactHip = kind === 'volley' ? 0.9 : 0.35;
   if (t < wind) {
     const k = smooth(0, wind, t);
-    hip = mix(0, -0.75, k);
-    knee = mix(0.2, 1.5, k);
-  } else if (t < strike) {
-    const k = smooth(wind, strike, t);
-    hip = mix(-0.75, swingTop, k);
-    knee = mix(1.5, kind === 'tackle' ? 0.05 : 0.12, k);
+    hip = mix(0, back, k);
+    knee = mix(0.25, kind === 'pass' ? 1.2 : 1.55, k);
+  } else if (t < C) {
+    // the swing: fast, through the ball at contact
+    const k = (t - wind) / (C - wind);
+    hip = mix(back, contactHip, k * k);
+    knee = mix(kind === 'pass' ? 1.2 : 1.55, 0.35, k);
+  } else if (t < follow) {
+    const k = smooth(C, follow, t);
+    hip = mix(contactHip, swingTop, k);
+    knee = mix(0.35, kind === 'tackle' ? 0.05 : 0.12, k);
   } else {
-    const k = smooth(strike, settle, t);
+    const k = smooth(follow, settle, t);
     hip = mix(swingTop, 0.1, k);
     knee = mix(0.12, 0.15, k);
   }
@@ -120,20 +161,21 @@ function kickPose(p: Pose, i: PoseInput, kind: 'kick' | 'pass' | 'volley' | 'tac
   if (left) { p.hipL = hip; p.kneeL = knee; p.hipR = -0.1; p.kneeR = support; }
   else { p.hipR = hip; p.kneeR = knee; p.hipL = -0.1; p.kneeL = support; }
   // Balance: the arm opposite the kicking leg swings out.
-  const armOut = 0.6 + 0.6 * smooth(0, strike, t) * (1 - smooth(strike, settle + 0.2, t));
+  const armOut = 0.6 + 0.6 * smooth(0, C, t) * (1 - smooth(follow, settle + 0.2, t));
   if (left) { p.shoulderOutR = armOut + 0.2; p.shoulderOutL = 0.35; p.shoulderL = 0.3; }
   else { p.shoulderOutL = armOut + 0.2; p.shoulderOutR = 0.35; p.shoulderR = 0.3; }
   p.elbowL = 0.5; p.elbowR = 0.5;
-  p.spine = kind === 'tackle' ? 0.45 : mix(0.15, -0.08, smooth(wind, strike, t)) + 0.1 * smooth(strike, settle, t);
-  p.twist = (left ? -1 : 1) * (kind === 'pass' ? 0.25 : 0.12) * Math.sin(Math.PI * clamp01(t / settle));
-  p.rootY = kind === 'tackle' ? -0.16 : -0.04;
+  // lean back a touch in the wind-up, over the ball at contact
+  p.spine = kind === 'tackle' ? 0.45 : mix(0.12, -0.06, smooth(0, wind, t)) + 0.2 * smooth(wind, C, t) - 0.08 * smooth(C, settle, t);
+  p.twist = (left ? -1 : 1) * (kind === 'pass' ? 0.25 : 0.14) * Math.sin(Math.PI * clamp01(t / settle));
+  p.rootY = kind === 'tackle' ? -0.16 : -0.04 - 0.03 * Math.sin(Math.PI * clamp01(t / C));
   if (kind === 'volley') {
     p.rootRoll = (left ? -1 : 1) * 0.45 * Math.sin(Math.PI * clamp01(t / (settle + 0.1)));
     p.rootY = 0.05 * Math.sin(Math.PI * clamp01(t / settle));
   }
   if (kind === 'pass') {
-    if (left) p.hipOutL = 0.25 * smooth(wind, strike, t);
-    else p.hipOutR = 0.25 * smooth(wind, strike, t);
+    if (left) p.hipOutL = 0.25 * smooth(wind, C, t);
+    else p.hipOutR = 0.25 * smooth(wind, C, t);
   }
 }
 

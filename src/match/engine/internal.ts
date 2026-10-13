@@ -105,6 +105,12 @@ export interface Agent {
   settled?: boolean;
   /** Off-ball support plan memory (role around the carrier, offset from the ball, next re-evaluation). */
   sup?: SupMem | null;
+  /** Body turn speed (rad/s) of the smoothed orientation. */
+  turnV?: number;
+  /** The target is only a heading (the user steering): run at full wanted speed, no arrival braking. */
+  freeRun?: boolean;
+  /** AI kick being wound up: the strike happens when `t` runs out (still on the ball). */
+  windup?: { t: number; go: () => void } | null;
 }
 
 export type SupRole = 'shortA' | 'shortB' | 'squareA' | 'squareB' | 'line' | 'deep' | 'wideA' | 'wideB' | 'run' | 'overlap' | 'shape';

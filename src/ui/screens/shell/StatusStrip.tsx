@@ -7,6 +7,7 @@ import type { Agenda } from '../../../game/api';
 import { navigate } from '../../router';
 import { CountUp, Crest, Meter } from '../../components/kit';
 import { DEFAULT_KIT, formatDate, money, userView } from './helpers';
+import SoundToggle from '../../components/SoundToggle';
 
 export default function StatusStrip({ state, agenda }: { state: GameState; agenda: Agenda | null }) {
   const v = userView(state);
@@ -44,6 +45,8 @@ export default function StatusStrip({ state, agenda }: { state: GameState; agend
           <Zap size={14} className="text-ink-dim shrink-0" />
           <Meter value={state.career.energy} tone="auto" showValue={false} size="sm" />
         </button>
+
+        <SoundToggle />
       </div>
     </header>
   );

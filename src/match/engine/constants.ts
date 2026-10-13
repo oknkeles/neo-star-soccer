@@ -58,3 +58,12 @@ export const BODY_H = 1.85;
 
 /** Seconds a call for the ball (F) stays active. */
 export const CALL_WINDOW = 1.8;
+
+/**
+ * Seconds from the start of a kick animation to foot-ball contact (3D poses). AI strikes wind
+ * up for this long before the ball leaves; the user's (and first-time) strikes start the
+ * animation just before contact so the swing and the ball stay in sync.
+ */
+export const KICK_CONTACT = { kick: 0.15, pass: 0.12, volley: 0.14, tackle: 0.12, header: 0.26 } as const;
+/** Animation time at which an instant (no wind-up) strike starts: a short final swing into contact. */
+export const KICK_SNAP = 0.045;

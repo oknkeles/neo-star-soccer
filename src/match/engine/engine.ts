@@ -12,7 +12,7 @@ import { clamp } from '../../core/util';
 import { t } from '../../core/i18n';
 import './strings';
 import {
-  AFTERTOUCH_WINDOW, AIM_TIMESCALE, BODY_H, BODY_R, BR, CALL_WINDOW, DT, GH, GW, HL, HW, REPLAY_FRAMES, REPLAY_HZ,
+  AFTERTOUCH_WINDOW, AIM_TIMESCALE, BODY_H, BODY_R, BR, CALL_WINDOW, DT, GH, GW, HL, HW, KICK_CONTACT, KICK_SNAP, REPLAY_FRAMES, REPLAY_HZ,
 } from './constants';
 import { assignSlots } from './formation';
 import { baseXg, distToGoal, hyp, inBox, segDist } from './geom';
@@ -23,6 +23,7 @@ import {
 } from './physics';
 import { crossPlane, freshBall, launched, predictPath } from './solver';
 import { aiUpdate, carrierThink } from './ai';
+import { angDiff, faceStep, locoStep, strideLen, V_FREE, type LocoParams } from './locomotion';
 import { keeperTick, newKeeperMem } from './keeper';
 import { initMoment, drillTick, scriptTick, type MomentScript } from './moments';
 import { buildResult, classify, bannerFor } from './outcome';
@@ -32,8 +33,8 @@ export interface UserCtl {
   dir: Vec2 | null;
   sprint: boolean;
   aiming: boolean;
-  /** Buffered one-touch kick waiting for the ball to come within reach. */
-  pending: { params: KickParams; until: number } | null;
+  /** Buffered one-touch kick waiting for the ball to come within reach (aimY: its goal-line target). */
+  pending: { params: KickParams; until: number; aimY?: number | null } | null;
   /** Aftertouch window end (sim time) and spin added so far. */
   atUntil: number;
   atSpin: number;
@@ -76,7 +77,7 @@ export class Engine {
   /** Set piece: everyone waits for the user's kick. */
   frozen = false;
   /**
-   * 0..1 casual-play assistance derived from setup.difficulty: 1 on 'easy' (≈0.3), ~0.35 on
+   * 0..1 casual-play assistance derived from setup.difficulty: 0.82 on 'easy' (≈0.3), 0.41 on
    * 'normal' (≈0.5), 0 on 'hard'. Slows opponents' reactions and pressing, softens the keeper,
    * makes the user's touch / dribble / execution more forgiving and moments longer.
    */
@@ -120,8 +121,9 @@ export class Engine {
     this.rng = new Rng((setup.seed >>> 0) || 1);
     this.env = physEnv(setup.weather);
     this.attackSide = setup.type === 'defend' ? 'them' : 'us';
-    // easy (≈0.3) → 1, normal (≈0.5) → 0.5, hard (≥0.7) → 0
-    this.ease = clamp((0.7 - clamp(Number.isFinite(setup.difficulty) ? setup.difficulty : 0.5, 0, 1)) / 0.4, 0, 1);
+    // easy (≈0.3) → 0.82, normal (≈0.5) → 0.41, hard (≥0.7) → 0 — a notch less assistance than
+    // the first casual tuning (1 / 0.5 / 0): the game stays fun but is no longer trivial
+    this.ease = 0.82 * clamp((0.7 - clamp(Number.isFinite(setup.difficulty) ? setup.difficulty : 0.5, 0, 1)) / 0.4, 0, 1);
     this.state = {
       time: 0, timeScale: 1, phase: 'intro', ball: freshBall({ x: 0, y: 0, z: BR }), players: [], focus: 1,
       offsideLineX: null, banner: null, outcome: null,
@@ -152,10 +154,10 @@ export class Engine {
         },
         target: { x: 0, y: 0 }, urgency: 0, duty: 'idle',
         topSpeed: 5.9 + 3.3 * (clamp(a.pace, 1, 99) / 99) + (isUser ? 0.65 * this.ease : 0),
-        accel: 3.4 + 4.4 * (clamp(a.acceleration, 1, 99) / 99),
+        accel: 6.8 + 3.8 * (clamp(a.acceleration, 1, 99) / 99),
         cool: 0, stun: 0, think: 0.1 + 0.02 * (i % 10), touch: 0, touchPeriod: 0.5, jump: 0, markIdx: -1, receivedFrom: -1,
         carryT: 0, runT: 0, runTarget: null, keeper: isGK ? newKeeperMem() : null,
-        reaction: clamp(0.3 - 0.12 * (a.positioning / 99) - (side === 'them' ? 0.08 * (diff - 0.5) - 0.12 * this.ease : 0), 0.12, 0.52),
+        reaction: clamp(0.3 - 0.12 * (a.positioning / 99) - (side === 'them' ? 0.11 * (diff - 0.5) - 0.08 * this.ease : 0), 0.12, 0.52),
         animLock: 0, noise: side === 'them' ? 1.25 - 0.5 * diff : isUser ? 1 - 0.35 * this.ease : 1, eit: Infinity, eitPoint: null, wall: false, passive: false,
       };
       this.agents.push(agent);
@@ -397,7 +399,9 @@ export class Engine {
     if (z <= 0.45 && d <= 1.0) return { ok: true, kind: 'ground' };
     if (z < 1.25 && d <= 1.1) return { ok: true, kind: 'volley' };
     if (z < 1.4 && d <= 0.8) return { ok: true, kind: 'volley' };
-    if (z >= 1.4 && z <= this.headReach(a) + (a.isUser ? 0.15 * this.ease : 0) && d <= 0.95) return { ok: true, kind: 'header' };
+    // attacking a cross played to him: he times his jump to it (a little more reach on easy / normal)
+    const xIn = a.isUser && !!this.lastKick?.cross && this.lastKick.target === a.i && this.lastKick.side === a.side ? 0.15 + 0.25 * this.ease : 0;
+    if (z >= 1.4 && z <= this.headReach(a) + (a.isUser ? 0.15 * this.ease : 0) + xIn * 0.5 && d <= 0.95 + xIn) return { ok: true, kind: 'header' };
     return { ok: false, kind: z > 1.4 ? 'header' : z > 0.45 ? 'volley' : 'ground' };
   }
 
@@ -427,9 +431,16 @@ export class Engine {
     a.cool = 0.32;
     a.carryT = 0;
     const anim: AnimState = kind === 'header' ? 'header' : kind === 'volley' ? 'volley' : spec.isShot || p.power > 0.65 ? 'kick' : 'pass';
-    this.lockAnim(a, anim);
+    // a wound-up strike keeps its animation (contact now); an instant one starts just before contact
+    const wound = a.animLock > 0 && (a.st.anim === 'kick' || a.st.anim === 'pass') && (anim === 'kick' || anim === 'pass') && a.st.animTime > 0.05;
+    if (!wound) this.lockAnim(a, anim, undefined, kind === 'header' ? KICK_CONTACT.header - KICK_SNAP : anim === 'kick' || anim === 'pass' || anim === 'volley' ? KICK_CONTACT[anim] - KICK_SNAP : 0);
+    else a.animLock = Math.max(a.animLock, 0.3);
+    a.windup = null;
     if (kind === 'header') a.jump = 0.5;
-    a.st.facing = Math.atan2(p.dir.y, p.dir.x);
+    // the hips open toward the kick; the rest of the body turns after it (no snap)
+    const kd = angDiff(a.st.facing, Math.atan2(p.dir.y, p.dir.x));
+    a.st.facing += clamp(kd, -0.45, 0.45);
+    a.turnV = 0;
 
     const rec: KickRec = {
       id: this.kicks.length, by: a.i, side: a.side, t: s.time, kind, isShot: spec.isShot, target: opts.target ?? -1, from,
@@ -448,7 +459,7 @@ export class Engine {
     } else {
       rec.offside = this.offsidePlayers(a, from);
       if (rec.target < 0) rec.target = this.guessReceiver(a, p);
-      rec.cross = rec.cross || (p.loft > 0.25 && inBox({ x: a.dir * (HL - 8), y: 0 }, a.dir) && Math.abs(from.y) > 12 && from.x * a.dir > 25);
+      rec.cross = rec.cross || this.crossKick(a, from, p);
     }
     this.kicks.push(rec);
     this.lastKick = rec;
@@ -468,6 +479,22 @@ export class Engine {
   }
 
   private receiveTime = 0;
+
+  /** A delivery from a wide area into the box: lofted / whipped, or a cut-back from the byline. */
+  private crossKick(a: Agent, from: Vec2, p: KickParams): boolean {
+    const dir = a.dir;
+    const u = from.x * dir;
+    if (Math.abs(from.y) < 9 || u < HL - 36) return false;
+    // where the kick heads: the line toward the box
+    const sy = Math.sign(from.y);
+    if (p.dir.y * sy > -0.25) return false;
+    const tLine = (Math.abs(from.y) - 6) / Math.max(0.05, -p.dir.y * sy);
+    const xAt = (from.x + p.dir.x * tLine) * dir;
+    if (xAt < HL - 20 || xAt > HL + 1) return false;
+    if (p.loft >= 0.14) return Math.abs(from.y) > 12;
+    // a ground ball pulled back from near the byline toward the penalty spot
+    return u > HL - 13 && p.dir.x * dir < 0.35;
+  }
 
   private blockersInCone(a: Agent, from: Vec2): number {
     const gx = a.dir * HL;
@@ -533,7 +560,11 @@ export class Engine {
     }
     // ball on its way: buffer the strike for a moment (volleys / headers)
     if (!this.owner || this.owner.side !== 'us') {
-      this.ctl.pending = { params: this.sanitize(raw), until: s.time + 0.45 };
+      const p = this.sanitize(raw);
+      // where it was aimed on the goal line: the strike is re-pointed there from the contact point
+      const b = s.ball.pos;
+      const gy = p.dir.x > 0.2 && b.x < HL ? b.y + (p.dir.y * (HL - b.x)) / p.dir.x : NaN;
+      this.ctl.pending = { params: p, until: s.time + 0.45, aimY: Math.abs(gy) < GW + 1.5 ? gy : null };
     }
     this.stopAiming();
   }
@@ -648,7 +679,7 @@ export class Engine {
     const D = (c.a.dribbling * 0.65 + c.a.strength * 0.35) / 99;
     const csp = hyp(c.st.vel.x, c.st.vel.y);
     let pWin = 0.46 + 0.62 * (T - D) + (slide ? 0.1 : 0) - (behind ? 0.18 : 0) - (d > 1.0 ? 0.08 : 0) + (csp > 6 ? 0.04 : 0);
-    if (a.side === 'them') pWin += 0.16 * (this.setup.difficulty - 0.5) - (c.isUser ? 0.22 : 0.12) * this.ease;
+    if (a.side === 'them') pWin += 0.22 * (this.setup.difficulty - 0.5) - (c.isUser ? 0.12 : 0.08) * this.ease;
     if (a.isUser) pWin += 0.12 * this.ease;
     if (a.side === 'us' && !a.isUser && this.attackSide === 'them') pWin -= 0.1;
     pWin = clamp(pWin, 0.08, 0.9);
@@ -748,6 +779,8 @@ export class Engine {
       // one touch to set it, then decide (a one-two is played off that touch)
       a.think = (a.receivedFrom === this.user.i ? 0.1 : 0.16) + 0.02 * (a.i % 3);
     }
+    // pressed as it arrives: lay it off first time (the decision comes straight away)
+    if (fromReceive && !a.isUser && !a.isGK && this.pressureOn(a) > 0.55) a.think = Math.min(a.think, 0.04);
     if (fromReceive && a.isUser && this.ctl.dir) {
       // directional first touch: the ball (and he) go the way he is steering — a touch-and-go
       // turns his run by up to ~90° at once (the sharper the turn, the more speed it costs)
@@ -759,13 +792,15 @@ export class Engine {
         let d = want - cur;
         while (d > Math.PI) d -= 2 * Math.PI;
         while (d < -Math.PI) d += 2 * Math.PI;
-        const ang = cur + clamp(d, -1.6, 1.6);
-        const keep = clamp(1 - Math.abs(d) * 0.2, 0.62, 0.96);
+        // (his run turns by up to ~65° with the touch; the ball goes the way he steers and the
+        // body follows it — locomotion turns the rest)
+        const ang = cur + clamp(d, -1.15, 1.15);
+        const keep = clamp(1 - Math.abs(d) * 0.26, 0.55, 0.96);
         v.x = Math.cos(ang) * sp * keep;
         v.y = Math.sin(ang) * sp * keep;
-        b.vel.x = v.x; b.vel.y = v.y;
+        b.vel.x = Math.cos(want) * sp * keep; b.vel.y = Math.sin(want) * sp * keep;
       }
-      a.st.facing = want;
+      a.st.facing += clamp(angDiff(a.st.facing, want), -0.6, 0.6);
       a.touch = 0;
     }
     if (this.possession !== a.side) { this.possession = a.side; this.possSince = s.time; }
@@ -806,12 +841,13 @@ export class Engine {
   private control(a: Agent): void {
     const s = this.state;
     const b = s.ball;
-    const rvx = b.vel.x - a.st.vel.x;
-    const rvy = b.vel.y - a.st.vel.y;
+    // (he cushions it: his own run counts half — receivers give with the ball)
+    const rvx = b.vel.x - a.st.vel.x * 0.5;
+    const rvy = b.vel.y - a.st.vel.y * 0.5;
     const vr = hyp(hyp(rvx, rvy), b.vel.z * 0.6);
     const ft = clamp(a.a.firstTouch, 1, 99) / 99;
     const pr = this.pressureOn(a);
-    const diff = Math.max(0, vr - 4.5) / (9 + 17 * ft) + (b.pos.z > 0.6 ? 0.18 : 0) + pr * 0.12 * (1.2 - ft) + (a.side === 'them' ? 0.05 * (0.5 - this.setup.difficulty) : 0) - (a.isUser ? 0.1 + 0.16 * this.ease : 0)
+    const diff = Math.max(0, vr - 5.5) / (10 + 18 * ft) + (b.pos.z > 0.6 ? 0.18 : 0) + pr * 0.12 * (1.2 - ft) + (a.side === 'them' ? 0.05 * (0.5 - this.setup.difficulty) : 0) - (a.isUser ? 0.1 + 0.16 * this.ease : 0)
       // team-mates meeting the user's pass at speed: a cleaner first touch
       - (a.side === 'us' && !a.isUser && this.lastKick?.user && !this.lastKick.isShot ? 0.12 + 0.2 * this.ease : 0)
       // ...and the user cushions team-mates' passes more easily on easy / normal
@@ -863,6 +899,7 @@ export class Engine {
       }
     }
     this.updateUser(live && !over);
+    if (live && !this.frozen) this.windups();
     for (const a of this.agents) {
       if (a.cool > 0) a.cool -= DT;
       if (a.jump > 0) a.jump -= DT;
@@ -883,6 +920,7 @@ export class Engine {
     const u = this.user;
     const c = this.ctl;
     const st = u.st;
+    u.freeRun = false;
     if (this.frozen || u.passive) {
       u.target = { x: st.pos.x, y: st.pos.y };
       u.urgency = 0;
@@ -891,11 +929,13 @@ export class Engine {
     if (c.dir) {
       u.target = { x: st.pos.x + c.dir.x * 6, y: st.pos.y + c.dir.y * 6 };
       u.urgency = c.sprint ? 1 : 0.78;
+      u.freeRun = true;
       // a pass is coming to him: meet it in his stride (unless he is clearly steering elsewhere)
       const meet = this.passForUser() ? this.meetPoint(c.dir) : null;
       if (meet) {
         u.target = { x: meet.x, y: meet.y };
         u.urgency = meet.urg;
+        u.freeRun = false;
       }
     } else if (c.target) {
       u.target = { x: c.target.x, y: c.target.y };
@@ -920,8 +960,16 @@ export class Engine {
     if (c.pending) {
       if (this.state.time > c.pending.until || this.owner?.side === 'them') c.pending = null;
       else if (this.canKick()) {
-        const p = c.pending.params;
+        let p = c.pending.params;
+        const aimY = c.pending.aimY;
         c.pending = null;
+        const b = this.state.ball.pos;
+        if (aimY !== null && aimY !== undefined && b.x < HL - 1) {
+          const dx = HL - b.x;
+          const dy = aimY - b.y;
+          const l = hyp(dx, dy) || 1;
+          p = { ...p, dir: { x: dx / l, y: dy / l } };
+        }
         this.execKick(u, p);
       }
     }
@@ -961,10 +1009,12 @@ export class Engine {
     let best: PathSample | null = null;
     let bestV = Infinity;
     let bestT = 0;
+    // a cross: he can meet it in the air (head / volley height)
+    const zTop = this.lastKick?.cross ? Math.min(this.headReach(u) + 0.1 * this.ease, 2.3) : 1.3;
     for (let i = 1; i < path.length; i++) {
       const q = path[i];
       const qt = q.t - age;
-      if (q.z > 1.3 || qt <= 0) continue;
+      if (q.z > zTop || qt <= 0) continue;
       const dx = q.x - p.x;
       const dy = q.y - p.y;
       const d = hyp(dx, dy);
@@ -1030,8 +1080,11 @@ export class Engine {
       const d = hyp(tx, ty);
       const fatigue = 0.78 + 0.22 * st.stamina;
       const sprinting = a.urgency >= 0.97;
+      const owns = this.owner === a;
       let vmax = a.topSpeed * clamp(a.urgency, 0, 1) * fatigue;
-      if (this.owner === a) vmax *= 0.83 + 0.13 * (a.a.dribbling / 99);
+      if (owns) vmax *= 0.83 + 0.13 * (a.a.dribbling / 99);
+      // planting the standing foot for a strike
+      if (a.windup) vmax *= 0.7;
       let dvx = 0;
       let dvy = 0;
       // AI hysteresis: once a player has arrived he stands until his (re-planned) spot drifts away,
@@ -1043,7 +1096,8 @@ export class Engine {
         if (a.settled && d < 0.35) go = false;
       } else a.settled = false;
       if (go) {
-        const sp = Math.min(vmax, Math.sqrt(2 * 5 * Math.max(0, d - 0.05)));
+        // a heading (the user steering) is run at full wanted speed; a spot is arrived at
+        const sp = a.freeRun ? vmax : Math.min(vmax, Math.sqrt(2 * 4.5 * Math.max(0, d - 0.05)));
         dvx = (tx / d) * sp;
         dvy = (ty / d) * sp;
       }
@@ -1062,28 +1116,17 @@ export class Engine {
           dvy += (oy / od) * push;
         }
       }
-      let ax = dvx - st.vel.x;
-      let ay = dvy - st.vel.y;
-      const am = hyp(ax, ay);
-      const braking = ax * st.vel.x + ay * st.vel.y < 0;
-      // the user's player answers the controls quickly (no sluggish starts / turns)
-      const lim = a.accel * (braking ? 1.7 : 1) * DT * (a.isUser ? 1.55 + 0.6 * this.ease : 1);
-      if (am > lim) { ax *= lim / am; ay *= lim / am; }
-      st.vel.x += ax;
-      st.vel.y += ay;
+      const want = this.wantV;
+      want.x = dvx; want.y = dvy;
+      locoStep(st.vel, want, st.facing, this.locoParams(a, fatigue, owns), DT);
       st.pos.x = clamp(st.pos.x + st.vel.x * DT, -HL - 4, HL + 4);
       st.pos.y = clamp(st.pos.y + st.vel.y * DT, -HW - 4, HW + 4);
       const sp = hyp(st.vel.x, st.vel.y);
-      if (sp > 0.35 && !(a.isGK && sp < 5)) {
-        // turn with a max rate (no one-frame flips when the velocity swings at low speed)
-        const rate = a.isUser ? 16 : sp > 2.5 ? 10 : 5;
-        st.facing = turnToward(st.facing, Math.atan2(st.vel.y, st.vel.x), rate * DT);
-      } else if (this.owner !== a) {
-        // idle players watch the ball
-        const b = this.state.ball.pos;
-        const want = Math.atan2(b.y - st.pos.y, b.x - st.pos.x);
-        st.facing = turnToward(st.facing, want, 4 * DT);
-      }
+      // body orientation: smoothed separately from the velocity (runs face the run, a jog / shuffle
+      // keeps the eyes on the ball, keepers stay square)
+      const f = faceStep(st.facing, a.turnV ?? 0, this.wantFacing(a, sp, dvx, dvy, owns), a.isUser ? 260 : 150, a.isUser ? 14 : sp > 4 ? 8 : 11, DT);
+      st.facing = f.facing;
+      a.turnV = f.turnV;
       // stamina
       if (sprinting && sp > 0.7 * a.topSpeed) {
         st.stamina = Math.max(0.05, st.stamina - DT * 0.022 * (1.45 - a.a.stamina / 99));
@@ -1094,10 +1137,80 @@ export class Engine {
     }
   }
 
-  lockAnim(a: Agent, anim: AnimState, dur?: number): void {
+  private wantV: Vec2 = { x: 0, y: 0 };
+
+  /** Locomotion limits for an agent this tick (the user's player answers a little quicker). */
+  private locoParams(a: Agent, fatigue: number, owns: boolean): LocoParams {
+    const acc = clamp(a.a.acceleration, 1, 99) / 99;
+    let a0 = a.accel;
+    let brake = 7.4 + 2.6 * acc;
+    let grip = 9.5 + 3.5 * acc;
+    if (a.isUser) {
+      a0 *= 1.22 + 0.25 * this.ease;
+      brake *= 1.08 + 0.15 * this.ease;
+      grip *= 1.12 + 0.2 * this.ease;
+    }
+    if (owns) { a0 *= 0.86; grip *= 0.8; }
+    const vtop = a.topSpeed * fatigue * (owns ? 0.83 + 0.13 * (a.a.dribbling / 99) : 1);
+    // keepers: quick feet across the goal (a little sharper on the harder settings)
+    if (a.isGK) return { vtop, a0: a0 * (0.85 + (a.side === 'them' ? 0.3 * clamp(this.setup.difficulty - 0.5, 0, 0.5) : 0)), brake: brake * 1.1, grip: grip * 1.1, side: 0.85, back: 0.6 };
+    return { vtop, a0, brake, grip, side: 0.62, back: 0.45 };
+  }
+
+  /** Where the body should face. */
+  private wantFacing(a: Agent, sp: number, dvx: number, dvy: number, owns: boolean): number {
+    const st = a.st;
+    const b = this.state.ball.pos;
+    const velH = Math.atan2(st.vel.y, st.vel.x);
+    const ws = hyp(dvx, dvy);
+    const wantH = ws > 0.05 ? Math.atan2(dvy, dvx) : st.facing;
+    const bx = b.x - st.pos.x;
+    const by = b.y - st.pos.y;
+    const toBall = bx * bx + by * by > 0.25 ? Math.atan2(by, bx) : st.facing;
+    if (a.windup) return st.facing;
+    if (owns) {
+      // the user's ball goes where he steers (the body turns into it, the run follows)
+      const cd = a.isUser ? this.ctl.dir : null;
+      if (cd) return Math.atan2(cd.y, cd.x);
+      return sp > 0.6 ? velH : ws > 0.3 ? wantH : st.facing;
+    }
+    if (a.isGK) return sp > 5 ? velH : toBall;
+    if (a.isUser && this.ctl.dir) return ws > 0.05 ? wantH : st.facing;
+    // running: face the run; a jog / shuffle keeps the eyes on the ball
+    if (ws > 3.8 || sp > 4.2) return sp > V_FREE ? velH : wantH;
+    return toBall;
+  }
+
+  lockAnim(a: Agent, anim: AnimState, dur?: number, startT = 0): void {
     a.st.anim = anim;
-    a.st.animTime = 0;
+    a.st.animTime = startT;
     a.animLock = dur ?? ONE_SHOT_ANIMS[anim] ?? 0.4;
+  }
+
+  /**
+   * AI strike with a wind-up: the kick animation starts now and the ball leaves at contact
+   * (`go` runs then, if he still has the ball). He plants (slows) meanwhile.
+   */
+  windUp(a: Agent, anim: 'kick' | 'pass', go: () => void, windT = 0.1): void {
+    const c = KICK_CONTACT[anim];
+    const w = Math.min(c, windT);
+    // (the animation starts that far before contact: a short backswing, then the strike; a quick
+    // pass is just the final swing)
+    this.lockAnim(a, anim, w + 0.3, c - Math.max(w, KICK_SNAP));
+    a.windup = { t: w, go };
+    a.think = w + 0.25;
+  }
+
+  private windups(): void {
+    for (const a of this.agents) {
+      const w = a.windup;
+      if (!w) continue;
+      w.t -= DT;
+      if (w.t > 0) continue;
+      a.windup = null;
+      if (this.owner === a && this.state.phase !== 'outcome' && this.state.phase !== 'ended') w.go();
+      else a.animLock = 0;
+    }
   }
 
   private animate(a: Agent, sp: number): void {
@@ -1133,14 +1246,16 @@ export class Engine {
     }
     const sp = hyp(st.vel.x, st.vel.y);
     a.carryT += DT;
+    // touches follow the running rhythm: one every stride when he is slow, every other stride at pace
+    const per = strideLen(sp) * 0.85 * (1 + clamp((sp - 4) / 3, 0, 1));
+    a.touchPeriod = sp > 0.3 ? per / sp : 0.6;
     a.touch += DT / a.touchPeriod;
     if (a.touch >= 1) {
       a.touch -= 1;
-      a.touchPeriod = clamp(0.62 - sp * 0.042, 0.3, 0.62);
-      if (sp > 2.5) {
+      if (sp > 2.5 && !a.windup) {
         const drib = clamp(a.a.dribbling, 1, 99) / 99;
         const pr = this.pressureOn(a);
-        const pHeavy = (Math.max(0, sp / a.topSpeed - 0.62) * (1 - drib) * 1.1 + pr * 0.05 * (1 - drib)) * (a.isUser ? 1 - 0.95 * this.ease : 1);
+        const pHeavy = (Math.max(0, sp / a.topSpeed - 0.62) * (1 - drib) * 1.1 + pr * 0.05 * (1 - drib)) * (a.isUser ? Math.max(0.05, 1 - 1.15 * this.ease) : 1);
         if (this.rng.chance(pHeavy)) {
           // heavy touch: the ball runs away from him
           const fx = Math.cos(st.facing);
@@ -1162,7 +1277,7 @@ export class Engine {
     const fy = Math.sin(st.facing);
     // soft touches: after each touch the ball rolls a little ahead and the runner catches it up
     // (continuous offset, no dart forward at the touch)
-    const push = 0.05 + 0.05 * sp;
+    const push = 0.04 + 0.075 * sp;
     const lead = 0.38 + push * Math.sin(Math.PI * clamp(a.touch, 0, 1));
     const tx = st.pos.x + fx * lead;
     const ty = st.pos.y + fy * lead;
@@ -1286,6 +1401,7 @@ export class Engine {
     if (z > 3.2) return;
     const speed = ballSpeed(b);
     const k = this.lastKick;
+    const userBall = this.passForUser() && Number.isFinite(this.user.eit) && this.user.eit < 3.5 && this.user.stun <= 0;
     let best: Agent | null = null;
     let bestD = Infinity;
     for (const a of this.agents) {
@@ -1305,10 +1421,14 @@ export class Engine {
       if (fresh) continue;
       // team-mates get out of the way of their own side's shot
       if (!a.isUser && k && k.isShot && k.side === a.side && k.result === 'pending' && s.time - k.t < 2.5) continue;
+      // ...and leave a ball played to the user to him (no nicking his cross / pass)
+      if (!a.isUser && userBall && a.side === this.user.side) continue;
       if (a.isUser && (this.ctl.aiming || this.ctl.pending)) continue;
       // AI headers / volleys at goal or clearances
+      // (a cross played to the user: his marker is a beat slower to it on easy / normal)
       const crossIn = a.side === 'them' && !!k && k.cross && k.side === 'us' && s.time - k.t < 3;
-      if (!a.isUser && z > 1.25 && z <= this.headReach(a) && d < 0.85 * (crossIn ? 1 - 0.75 * this.ease : 1) && speed > 4) {
+      const crossUser = crossIn && !!k && k.target === this.user.i;
+      if (!a.isUser && z > 1.25 && z <= this.headReach(a) && d < 0.85 * (crossIn ? 1 - (crossUser ? 0.9 : 0.75) * this.ease : 1) && speed > 4) {
         if (d < bestD) { bestD = d; best = a; }
         continue;
       }
@@ -1326,6 +1446,14 @@ export class Engine {
       // the AI meets an aerial ball: header (shot, clearance or knock-down)
       aiHeader(this, best);
       return;
+    }
+    // an attacker meeting a team-mate's cross in front of goal finishes it first time
+    if (!best.isUser && !best.isGK && k && k.cross && k.side === best.side && !k.oppTouched && distToGoal(best.st.pos, best.dir) < 15 && s.time - k.t < 3.5) {
+      const kind = b.pos.z > 0.5 ? 'volley' : 'ground';
+      if (this.rng.chance(kind === 'volley' ? 0.8 : 0.9)) {
+        this.execKick(best, shotParams(this, best, { kind, power: kind === 'volley' ? 0.8 : 0.78, zLow: 0.25, zHigh: 1.2, curl: 0 }), { kind, isShot: true });
+        return;
+      }
     }
     this.control(best);
   }
@@ -1508,4 +1636,4 @@ function turnToward(cur: number, want: number, maxStep: number): number {
   return cur + clamp(d, -maxStep, maxStep);
 }
 
-import { aiHeader } from './ai';
+import { aiHeader, shotParams } from './ai';

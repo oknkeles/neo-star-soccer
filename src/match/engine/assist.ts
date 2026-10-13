@@ -11,7 +11,9 @@ import { Engine } from './engine';
 import { distToGoal, hyp } from './geom';
 import type { Agent } from './internal';
 import { naturalCurlSign } from './kick';
-import { laneRisk, openMates, passOptions } from './ai';
+import { laneRisk, ledPass, openMates, passOptions } from './ai';
+import { throughParams } from './aim';
+import { deliverCross, inBoxArea, inCrossZone } from './cross';
 import { atDistance, groundPass, launched, predictPath, solveLob, solveShot } from './solver';
 
 export interface ShotIntent {
@@ -392,6 +394,13 @@ export function assistPass(engine: MomentEngine, intent: PassIntent): KickParams
     return { dir: { x: pd.x / l, y: pd.y / l }, power: 0.5, loft: 0, curl: 0 };
   }
   const set = e.frozen && e.owner === e.user ? e.setPiece : null;
+  const dir = e.user.dir;
+  // from a wide area toward the box: a cross to the runner who attacks it best
+  if (!set && !intent.through && inCrossZone(b, dir) && kindFor(e) !== 'header') {
+    const pd = prefDir(e, intent);
+    const into = rayIntoBox(b, pd, dir);
+    if (into) return deliverCross(e, e.user, null, { near: intent.toward && inBoxArea(intent.toward, dir) ? intent.toward : into }).params;
+  }
   const pick = pickPass(engine, intent) ?? (set === 'corner' ? { id: null, at: bestBoxTarget(e), lofted: true } : null);
   if (!pick) {
     const pd = prefDir(e, intent);
@@ -399,10 +408,24 @@ export function assistPass(engine: MomentEngine, intent: PassIntent): KickParams
   }
   const k = e.kicker(e.user);
   const from = ballFrom(e);
-  const dist = hyp(pick.at.x - b.x, pick.at.y - b.y);
   if (pick.lofted) return solveLob(e.env, k, from, pick.at, intent.through ? 0.4 : 0.9, 0, 0.42);
-  const arrive = intent.through ? 4.5 : clamp(4.5 + dist * 0.1, 5.5, 8.5);
-  return groundPass(e.env, k, from, pick.at, arrive);
+  const m = pick.id ? e.agents.find((a) => a.id === pick.id) ?? null : null;
+  if (m && intent.through) return throughParams(e, m, pick.at);
+  // into his stride (to feet when he stands), solved against the real flight time
+  if (m) return ledPass(e, e.user, m, { quick: true, feet: hyp(m.st.vel.x, m.st.vel.y) < 1.2, maxLead: 7 }).params;
+  const dist = hyp(pick.at.x - b.x, pick.at.y - b.y);
+  return groundPass(e.env, k, from, pick.at, clamp(4.5 + dist * 0.1, 5.5, 8.5));
+}
+
+/** Where a ball sent along `d` from `b` crosses the box most centrally (6–36 m away), or null. */
+function rayIntoBox(b: Vec2, d: Vec2, dir: 1 | -1): Vec2 | null {
+  let best: Vec2 | null = null;
+  for (let s = 6; s <= 36; s += 1.5) {
+    const p = { x: b.x + d.x * s, y: b.y + d.y * s };
+    if (!inBoxArea(p, dir) || Math.abs(p.y) > 16 || p.x * dir > HL - 4) continue;
+    if (!best || Math.abs(p.y) < Math.abs(best.y)) best = p;
+  }
+  return best;
 }
 
 /** Who the user can pass to right now, and who would play a one-two back (cheap enough for ~5 Hz). */

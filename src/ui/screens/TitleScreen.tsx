@@ -3,6 +3,7 @@
  * Owner: ui-shell agent.
  */
 import { useMemo, useState } from 'react';
+import SoundToggle from '../components/SoundToggle';
 import { motion } from 'framer-motion';
 import { Bot, FolderOpen, Play, Plus, Settings as SettingsIcon } from 'lucide-react';
 import { t } from '../../core/i18n';
@@ -112,6 +113,7 @@ export default function TitleScreen() {
           <Bot size={13} />{aiOn ? t('shell.title.aiOn') : t('shell.title.aiOff')}
           {aiOn && <span className="size-1.5 rounded-full bg-accent animate-nss-pulse" />}
         </button>
+        <SoundToggle className="h-8 w-8 rounded-full bg-black/30 backdrop-blur" size={14} />
         <div className="flex rounded-full border border-line bg-black/30 backdrop-blur p-0.5">
           {(['tr', 'en'] as const).map((l) => (
             <button key={l} onClick={() => updateSettings((s) => { s.lang = l; })}

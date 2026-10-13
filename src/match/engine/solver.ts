@@ -185,12 +185,15 @@ export function solveLob(
       const path = predictPath(launched(from, { dir, power: p, loft, curl }, k, spec), env, 3.5, 2);
       // horizontal distance where the ball descends through zAt
       let reach = 0;
+      let top = 0;
       for (let i = 1; i < path.length; i++) {
         const a = path[i - 1];
         const b = path[i];
+        top = Math.max(top, b.z);
         if (b.z < a.z && a.z >= zAt && b.z <= zAt) { reach = hyp(b.x - from.x, b.y - from.y); break; }
       }
-      if (!reach) reach = hyp(path[path.length - 1].x - from.x, path[path.length - 1].y - from.y) * 0.9;
+      // never up to zAt: too soft (more power); still above it at the end: too far
+      if (!reach) reach = top < zAt ? 0 : hyp(path[path.length - 1].x - from.x, path[path.length - 1].y - from.y) * 1.1 + 1;
       if (reach < d) lo = p; else hi = p;
       if (Math.abs(reach - d) < 0.3) { ok = true; break; }
     }

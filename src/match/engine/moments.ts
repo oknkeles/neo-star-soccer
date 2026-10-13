@@ -4,6 +4,7 @@
  * and the training-drill loop (attempts, scoring, resets).
  */
 import type { Position, Vec2 } from '../../core/types';
+import { deliverCross } from './cross';
 import { clamp } from '../../core/util';
 import { t } from '../../core/i18n';
 import { BR, GH, GW, HL, HW } from './constants';
@@ -250,11 +251,20 @@ function crossReceive(e: Engine): void {
   // casual play: the full-back has been beaten (trails the crosser) instead of standing in the lane
   const fx = r.float(3, 4.5);
   const fy = r.float(2, 3.5);
-  if (fb) place(fb, C.x + fx - (fx + 2.5) * e.ease, C.y - side * fy * (1 - 0.6 * e.ease), C);
+  if (fb) {
+    // casual play: the full-back has been beaten (trails the crosser, inside him) instead of
+    // standing in the crossing lane — fully on easy, a step behind on normal, in the lane on hard
+    const beat = e.ease > 0.01 ? 0.45 + 0.55 * e.ease : 0;
+    place(fb, C.x + fx * (1 - beat) - 2.5 * beat, C.y - side * fy * (1 - 0.6 * beat), C);
+    // (beaten: a yard off the winger and flat-footed — no tackle / block before the delivery)
+    fb.cool = e.introEnd + 1.0;
+  }
   keepOnside(e, [crosser]);
   const header = r.chance(0.65);
+  const crossAt = e.introEnd + r.float(0.2, 0.45);
+  if (fb && e.ease > 0.01) fb.stun = crossAt + 0.25;
   e.script.actions.push({
-    at: e.introEnd + r.float(0.5, 0.9), kind: 'cross', by: crosser.i, to: u.i,
+    at: crossAt, kind: 'cross', by: crosser.i, to: u.i,
     z: header ? r.float(1.75, 2.05) : r.float(0.75, 1.0), curl: side * r.float(0.15, 0.45) * (r.chance(0.6) ? 1 : -1), done: false,
   });
 }
@@ -461,9 +471,14 @@ export function scriptTick(e: Engine): void {
       const p = groundPass(e.env, e.kicker(by), b, lead, 7.5);
       e.execKick(by, p, { target: to.i, isShot: false });
     } else {
-      const aim = { x: to.st.pos.x + 1.2, y: to.st.pos.y * 0.9 };
-      const p = solveLob(e.env, e.kicker(by), { x: b.x, y: b.y, z: b.z }, aim, act.z ?? 1.9, act.curl ?? 0, 0.42);
-      e.execKick(by, p, { target: to.i, isShot: false, cross: true });
+      // a real cross: into the space he attacks, away from his marker (wound up)
+      const near = { x: to.st.pos.x + to.dir * 1.2, y: to.st.pos.y * 0.9 };
+      const prefer = (act.z ?? 1.9) > 1.5 ? (e.rng.chance(0.5) ? 'drive' : 'float') : 'whip';
+      void b;
+      e.windUp(by, 'kick', () => {
+        const d = deliverCross(e, by, to, { near, prefer });
+        e.execKick(by, d.params, { target: d.to ? d.to.i : to.i, isShot: false, cross: true });
+      }, 0.12);
     }
   }
 }

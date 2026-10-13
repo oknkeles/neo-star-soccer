@@ -1,3 +1,4 @@
+import SoundToggle from '../../components/SoundToggle';
 import { AnimatePresence, motion } from 'framer-motion';
 import { FastForward, Pause, Play, Radio } from 'lucide-react';
 import type { GameState, MatchContext, MatchEvent } from '../../../core/types';
@@ -76,6 +77,7 @@ export function LiveView({ ctx, live, state, speed, paused, onPause, onSpeed, on
       {!over && (
         <div className="fixed inset-x-0 bottom-0 z-30 bg-gradient-to-t from-bg via-bg/95 to-transparent pt-6 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="max-w-3xl mx-auto px-3 sm:px-4 flex items-center gap-2">
+            <SoundToggle className="h-13 w-13 rounded-2xl" size={20} />
             <Button variant="secondary" size="lg" onClick={onPause} aria-label={paused ? t('match.live.resume') : t('match.live.pause')} className="w-13 px-0">
               {paused ? <Play size={20} /> : <Pause size={20} />}
             </Button>

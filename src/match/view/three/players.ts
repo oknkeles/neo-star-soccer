@@ -282,6 +282,10 @@ export function buildPlayer(look: PlayerLook, bodyMat: THREE.Material, quality: 
   let lastAnim: AnimState = 'idle';
   let animBlend = 0;
   let roll = 0;
+  // smoothed longitudinal acceleration and heading of the run (body lean)
+  let lastSpeed = 0;
+  let accel = 0;
+  let runHeading = 0;
   const tmp = new THREE.Vector3();
 
   const apply = () => {
@@ -300,7 +304,7 @@ export function buildPlayer(look: PlayerLook, bodyMat: THREE.Material, quality: 
   };
 
   const frameInput = (f: PlayerFrame) => ({
-    anim: f.anim, t: f.animTime, speed: Math.hypot(f.vel.x, f.vel.y), cycle, kickFoot: look.foot, variant,
+    anim: f.anim, t: f.animTime, speed: Math.hypot(f.vel.x, f.vel.y), cycle, kickFoot: look.foot, variant, accel,
   });
 
   const rig: PlayerRig = {
@@ -319,14 +323,23 @@ export function buildPlayer(look: PlayerLook, bodyMat: THREE.Material, quality: 
     },
     update(dt, f) {
       const speed = Math.hypot(f.vel.x, f.vel.y);
-      cycle = advanceCycle(cycle, speed, dt);
+      cycle = advanceCycle(cycle, speed, dt, f.anim === 'dribble');
       root.position.set(f.pos.x, 0, -f.pos.y);
       const d = angleDelta(yaw, f.facing);
-      const turnRate = d / Math.max(dt, 1e-3);
       yaw += d * Math.min(1, dt * 14);
       root.rotation.y = yaw;
-      // Lean into turns when running.
-      const targetRoll = Math.max(-0.22, Math.min(0.22, -turnRate * speed * 0.004));
+      // lean into the acceleration (and back when braking)
+      const k = Math.min(1, dt * 7);
+      if (dt > 1e-4) accel += ((speed - lastSpeed) / dt - accel) * k;
+      lastSpeed = speed;
+      // lean into turns: the centripetal acceleration of the run (speed × heading rate)
+      let turnRate = 0;
+      if (speed > 1.5) {
+        const h = Math.atan2(f.vel.y, f.vel.x);
+        turnRate = angleDelta(runHeading, h) / Math.max(dt, 1e-3);
+        runHeading = h;
+      } else runHeading = f.facing;
+      const targetRoll = Math.max(-0.28, Math.min(0.28, -Math.atan((turnRate * speed) / 9.81) * 0.7));
       roll += (targetRoll - roll) * Math.min(1, dt * 8);
       if (f.anim !== lastAnim) { lastAnim = f.anim; animBlend = 1; }
       animBlend = Math.max(0, animBlend - dt * 4);

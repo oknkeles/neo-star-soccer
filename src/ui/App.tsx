@@ -4,9 +4,11 @@ import { FULLSCREEN, SCREENS } from './screens';
 import Layout from './Layout';
 import { Spinner, Toaster } from './components/kit';
 import GlobalOverlays from './GlobalOverlays';
+import { useMuteShortcut } from './components/SoundToggle';
 
 export default function App() {
   const route = useRoute();
+  useMuteShortcut();
   const Screen = SCREENS[route.name];
   const content = (
     <Suspense fallback={<div className="min-h-[60vh] grid place-items-center"><Spinner /></div>}>

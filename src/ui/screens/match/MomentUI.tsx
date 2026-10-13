@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import SoundToggle from '../../components/SoundToggle';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Camera, ChevronRight, FastForward, Play, RotateCcw } from 'lucide-react';
 import type { CameraMode, MomentResult, MomentType } from '../../../core/types';
@@ -109,6 +110,7 @@ export function MomentHud({ left, label, camera, onCamera, onSkip, skipLabel, ex
           <div className="hidden sm:block truncate rounded-full bg-black/50 backdrop-blur px-3 py-1 font-display text-lg tracking-wider text-accent">{label}</div>
         </div>
         {extra}
+        <SoundToggle className="pointer-events-auto h-10 w-10 bg-black/55 backdrop-blur border-white/10" />
         <button onClick={onCamera} title={is2D() ? t(`v2d.zoom.${camera}`) : t(`match.cam.${camera}`)}
           className="pointer-events-auto h-10 px-3 rounded-xl bg-black/55 backdrop-blur border border-white/10 text-ink flex items-center gap-1.5 text-xs font-semibold cursor-pointer hover:bg-black/70">
           <Camera size={16} /><span className="hidden sm:inline">{is2D() ? t(`v2d.zoom.${camera}`) : t(`match.cam.${camera}`)}</span>
