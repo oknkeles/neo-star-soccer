@@ -68,6 +68,7 @@ describe('calm aim: drawn path → kick', () => {
 describe('calm aim: freeze semantics', () => {
   it('engine time does not advance while frozen; resumes after the kick', () => {
     const e = createMoment(makeSetup('one_on_one', { seed: 3, difficulty: 0.3 }));
+    e.input({ kind: 'start' });
     expect(untilUserBall(e)).toBe(true);
     for (let i = 0; i < 20; i++) e.step(1 / 60);
     const t0 = e.state.time;
@@ -93,6 +94,7 @@ describe('calm aim: freeze semantics', () => {
 
   it('cancel resumes without a kick; no freeze when the ball is out of reach', () => {
     const e = createMoment(makeSetup('one_on_one', { seed: 3, difficulty: 0.3 }));
+    e.input({ kind: 'start' });
     expect(untilUserBall(e)).toBe(true);
     e.input({ kind: 'aimStart', freeze: true });
     e.input({ kind: 'aimCancel' });
@@ -101,6 +103,7 @@ describe('calm aim: freeze semantics', () => {
     e.step(0.1);
     expect(e.state.time).toBeGreaterThan(t0);
     const d = createMoment(makeSetup('defend', { seed: 2 }));
+    d.input({ kind: 'start' });
     for (let i = 0; i < 90; i++) d.step(1 / 60);
     if (!d.canKick()) {
       d.input({ kind: 'aimStart', freeze: true });
@@ -113,6 +116,7 @@ describe('calm aim: pass assist and continuity', () => {
   /** An open_play moment with the user on the ball and his nearest open team-mate ahead. */
   function setupPass(seed: number) {
     const e = createMoment(makeSetup('open_play', { seed, difficulty: 0.3 }));
+    e.input({ kind: 'start' });
     if (!untilUserBall(e)) return null;
     e.input({ kind: 'moveDir', dir: { x: 0, y: 0 } });
     const u = user(e);
@@ -169,6 +173,7 @@ describe('calm aim: pass assist and continuity', () => {
 
   it('a drawn shot at the goal mouth reads as a shot', () => {
     const e = createMoment(makeSetup('one_on_one', { seed: 3, difficulty: 0.3 }));
+    e.input({ kind: 'start' });
     expect(untilUserBall(e)).toBe(true);
     for (let i = 0; i < 40 && !e.isFinished(); i++) { e.input({ kind: 'moveDir', dir: { x: 1, y: 0 } }); e.step(1 / 60); }
     e.input({ kind: 'aimStart', freeze: true });
@@ -185,6 +190,7 @@ describe('calm aim: pass assist and continuity', () => {
 
   it('keyboard aim: rotate / power / loft change the kick and bump the version', () => {
     const e = createMoment(makeSetup('one_on_one', { seed: 3, difficulty: 0.3 }));
+    e.input({ kind: 'start' });
     expect(untilUserBall(e)).toBe(true);
     e.input({ kind: 'aimStart', freeze: true });
     const aim = new CalmAim(e, { dir: { x: 1, y: 0 }, power: 0.5, loft: 0, curl: 0 }, 'shot');

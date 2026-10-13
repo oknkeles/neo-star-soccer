@@ -9,7 +9,9 @@ import { botStep } from '../api';
 import { makeSetup, type SetupOpts } from './helpers';
 
 export function engineFor(type: MomentType, seed: number, o: SetupOpts = {}): Engine {
-  return createMoment(makeSetup(type, { ...o, seed })) as Engine;
+  const e = createMoment(makeSetup(type, { ...o, seed })) as Engine;
+  e.input({ kind: 'start' });
+  return e;
 }
 
 /** Clear every outfield opponent out of the way (unpressured finishing). */

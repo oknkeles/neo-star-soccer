@@ -29,6 +29,7 @@ import { audio } from '../../audio/api';
 import { t } from '../../core/i18n';
 import { getSettings } from '../../core/settings';
 import { CalmAim, type AimSrc } from './calm';
+import './startPrompt';
 import '../view2d/strings';
 
 const CHARGE_TIME = 0.6;
@@ -101,11 +102,13 @@ export const CALM_ROWS: [string, string][] = [
   ['SPACE / Enter · Esc', 'v2d.calm.confirm'],
   ['F', 'v2d.calm.f'],
   ['SPACE / F', 'v2d.help.defend'],
+  ['mstart.helpKey', 'mstart.helpStart'],
+  ['mstart.helpBarKey', 'mstart.helpBar'],
 ];
 
 /** The key column of a help row (may be an i18n key itself). */
 export function keyLabel(k: string): string {
-  return k.startsWith('v2d.') ? t(k) : k;
+  return k.startsWith('v2d.') || k.startsWith('mstart.') ? t(k) : k;
 }
 
 /** Help rows of a control mode (the first column may itself be an i18n key). */
@@ -124,10 +127,20 @@ export const CONTROL_ROWS: [string, string][] = [
   ['C', 'v2d.help.call'],
   ['SPACE / F', 'v2d.help.defend'],
   ['W / S', 'v2d.help.setPiece'],
+  ['mstart.helpKey', 'mstart.helpStart'],
+  ['mstart.helpBarKey', 'mstart.helpBar'],
 ];
 
 const isTyping = (el: EventTarget | null) =>
   el instanceof HTMLElement && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+
+/** Run keys: tracked while the "press any key" hold waits (the run starts with the moment). */
+const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+/** Keys that do not begin a moment (sound, camera, help, focus / browser keys, modifiers). */
+const NO_START = new Set([
+  'KeyM', 'KeyV', 'KeyH', 'Tab', 'Escape', 'CapsLock', 'ContextMenu', 'NumLock', 'ScrollLock', 'Pause', 'PrintScreen',
+  'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight', 'OSLeft', 'OSRight', 'Fn', 'FnLock',
+]);
 
 const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyF', 'KeyR', 'KeyC', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight']);
 /** Extra keys used only while the calm aim is open. */
@@ -246,11 +259,39 @@ export class Controls {
     this.passHeld = -1;
   }
 
+  // ───────────────────────── "press any key to begin" ─────────────────────────
+
+  /** The moment waits for the player (engine hold) and the controls are live. */
+  awaitingStart(): boolean {
+    try { return this.state.awaitingStart === true && this.opts.enabled(); } catch { return false; }
+  }
+
+  /** Begin the moment if it is waiting; true when it was (the caller must not act on the input). */
+  tryStart(): boolean {
+    if (!this.awaitingStart()) return false;
+    audio.unlock();
+    this.acted = this.clock;
+    this.send({ kind: 'start' });
+    return true;
+  }
+
+  /** A key went down during the hold: run keys / Shift are remembered, any other real key begins. */
+  private onAwaitingKey(e: KeyboardEvent): void {
+    const code = e.code;
+    if (MOVE_KEYS.has(code) || code === 'ShiftLeft' || code === 'ShiftRight') this.keys.add(code);
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return; // held keys never begin it by accident
+    if (NO_START.has(code) || /^F\d{1,2}$/.test(code)) return;
+    if (code === 'Space' || code.startsWith('Arrow')) e.preventDefault();
+    // (the key only starts the moment: no shot, pass or call from the same press)
+    this.tryStart();
+  }
+
   // ───────────────────────── keyboard ─────────────────────────
 
   private onKey(e: KeyboardEvent, down: boolean): void {
     if (isTyping(e.target)) return;
     const code = e.code;
+    if (down && this.awaitingStart()) { this.onAwaitingKey(e); return; }
     if (!GAME_KEYS.has(code) && !(this.aim && AIM_KEYS.has(code))) {
       if (!down) { this.aimKeys.delete(code); this.aimHeld.delete(code); }
       return;
@@ -582,6 +623,11 @@ export class Controls {
 
   private onPointerDown(e: PointerEvent): void {
     const onSurface = e.target === this.surface || e.target instanceof HTMLCanvasElement;
+    if (onSurface && this.awaitingStart()) {
+      if (e.pointerType === 'touch') this.touchMode = true;
+      this.tryStart();
+      return;
+    }
     if (this.aim && onSurface && this.opts.enabled() && (e.pointerType === 'touch' || e.button === 0)) {
       audio.unlock();
       if (e.pointerType === 'touch') this.touchMode = true;
@@ -676,6 +722,7 @@ export class Controls {
       if (this.lastDir.x || this.lastDir.y) { this.send({ kind: 'moveDir', dir: { x: 0, y: 0 } }); this.lastDir = { x: 0, y: 0 }; }
       return;
     }
+    if (this.state.awaitingStart === true) return; // "press any key": nothing is sent before the start
     if (this.aim) {
       // the game is stopped: only the aim changes
       this.updateAim(dt);

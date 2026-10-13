@@ -1,13 +1,15 @@
 /**
  * In-viewport HUD of the 3D view (plain DOM, no React — the view is imperative): an overlay
  * canvas (shot power ring at the user, pass-target badge), camera & help buttons, wind, time
- * bar, contextual hint pill, outcome banner, controls help card and replay chrome. Touch
+ * bar, contextual hint pill, outcome banner, the "press any key to begin" prompt, the Action
+ * (stamina) bar, controls help card and replay chrome. Touch
  * controls (joystick + ŞUT / PAS) are mounted into `controlsLayer` by the view.
  * The flow screen draws its own top bar, so everything here avoids the top ~60 px.
  */
 import { t } from '../../core/i18n';
 import type { CameraMode } from '../../core/types';
 import { controlMode, controlRows, keyLabel } from '../controls/controls';
+import { staminaColor, TiredWatch, type StartInfo } from '../controls/startPrompt';
 import './strings';
 import '../view2d/strings';
 
@@ -46,6 +48,10 @@ export interface Hud {
   setControlsVisible(v: boolean): void;
   /** Calm aim open: hide the controls layer (touch stick / buttons) and the hint. */
   setAiming(on: boolean): void;
+  /** "Press any key to begin" over the frozen scene (null = hidden). Cheap to call every frame. */
+  setStart(info: StartInfo | null): void;
+  /** The user's Action (stamina) bar, 0..1 (null = hidden). Touches the DOM only on change. */
+  setStamina(v: number | null, touch?: boolean): void;
   showHelp(touch?: boolean): void;
   readonly helpOpen: boolean;
   frame(f: HudFrame): void;
@@ -73,8 +79,9 @@ const CSS = `
 .nssv-banner.goal{color:${GOLD};text-shadow:0 0 30px rgba(255,203,71,.75),0 0 80px rgba(255,140,40,.5),0 6px 24px #000}
 .nssv-banner.good{color:${ACCENT};text-shadow:0 0 28px rgba(184,255,60,.6),0 6px 24px #000}
 .nssv-banner.bad{color:#ffd0d6;text-shadow:0 0 26px rgba(255,79,100,.65),0 6px 24px #000}
-.nssv-hint{position:absolute;left:50%;bottom:calc(max(18px,env(safe-area-inset-bottom)) + 8px);transform:translateX(-50%);max-width:calc(100% - 140px);padding:7px 14px;border-radius:999px;background:rgba(4,10,7,.66);border:1px solid rgba(184,255,60,.35);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .35s ease}
+.nssv-hint{position:absolute;left:50%;bottom:calc(max(18px,env(safe-area-inset-bottom)) + 50px);transform:translateX(-50%);max-width:calc(100% - 140px);padding:7px 14px;border-radius:999px;background:rgba(4,10,7,.66);border:1px solid rgba(184,255,60,.35);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transition:opacity .35s ease,bottom .25s ease}
 .nssv-hint.on{opacity:1}
+.nssv.nssv-tired .nssv-hint{bottom:calc(max(18px,env(safe-area-inset-bottom)) + 88px)}
 .nssv-hint.touch{bottom:calc(max(18px,env(safe-area-inset-bottom)) + 130px)}
 .nssv-wind{position:absolute;left:max(14px,env(safe-area-inset-left));bottom:calc(max(18px,env(safe-area-inset-bottom)) + 104px);display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:#9db5a7;text-shadow:0 1px 2px #000}
 .nssv-wind svg{transition:transform .5s ease}
@@ -96,6 +103,30 @@ const CSS = `
 .nssv-help li kbd{flex:none;min-width:112px;text-align:right;font:700 12px Inter,system-ui,sans-serif;color:${ACCENT}}
 .nssv-help li kbd span{display:inline-block;padding:2px 7px;border-radius:6px;border:1px solid rgba(184,255,60,.55)}
 .nssv-help button{margin-top:14px;width:100%;height:46px;border-radius:14px;border:none;cursor:pointer;background:${ACCENT};color:#081008;font-family:var(--font-display,'Bebas Neue',Impact,sans-serif);font-size:22px;letter-spacing:.06em}
+.nssv-start{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:70px 16px 36vh;text-align:center;opacity:0;visibility:hidden;transition:opacity .18s ease,visibility 0s linear .18s;background:radial-gradient(ellipse 75% 45% at 50% 38%,rgba(2,6,4,.62),rgba(2,6,4,.28) 60%,transparent 100%);z-index:4}
+.nssv-start.on{opacity:1;visibility:visible;transition:opacity .25s ease}
+.nssv-start-card{display:flex;flex-direction:column;align-items:center;gap:10px;max-width:min(760px,100%);transform:translateY(8px);transition:transform .25s ease}
+.nssv-start.on .nssv-start-card{transform:none}
+.nssv-start-title{font-family:var(--font-display,'Bebas Neue',Impact,sans-serif);font-size:clamp(34px,7vw,64px);line-height:.95;letter-spacing:.04em;color:${ACCENT};text-shadow:0 0 26px rgba(184,255,60,.45),0 4px 22px rgba(0,0,0,.85)}
+.nssv-start-tip,.nssv-start-bar{max-width:540px}
+.nssv-start-tip{font-size:clamp(13px,2.4vw,16px);font-weight:600;line-height:1.35;color:#f2faf4;text-shadow:0 2px 10px rgba(0,0,0,.9)}
+.nssv-start-bar{font-size:12px;font-weight:500;line-height:1.35;color:#b9cfc0;text-shadow:0 1px 8px rgba(0,0,0,.9);display:flex;align-items:center;gap:6px;justify-content:center}
+.nssv-start-bar svg{flex:none;color:${ACCENT}}
+.nssv-start-key{margin-top:6px;padding:10px 22px;border-radius:999px;background:rgba(184,255,60,.14);border:1.5px solid rgba(184,255,60,.75);color:#fff;font-size:clamp(14px,2.6vw,17px);font-weight:800;letter-spacing:.03em;box-shadow:0 0 0 0 rgba(184,255,60,.45);animation:nssv-pulse 1.5s ease-in-out infinite}
+@keyframes nssv-pulse{0%,100%{opacity:.62;box-shadow:0 0 0 0 rgba(184,255,60,.4)}50%{opacity:1;box-shadow:0 0 0 9px rgba(184,255,60,0)}}
+.nssv-sta{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(max(18px,env(safe-area-inset-bottom)) + 6px);width:min(196px,42vw);--c:#96f046;pointer-events:none;filter:drop-shadow(0 2px 6px rgba(0,0,0,.55))}
+.nssv-sta-row{display:flex;align-items:center;gap:5px;margin-bottom:4px;font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:#d8e8de}
+.nssv-sta-row svg{flex:none;color:var(--c);transition:color .3s ease}
+.nssv-sta-row b{margin-left:auto;font-weight:800;font-variant-numeric:tabular-nums;color:var(--c);transition:color .3s ease}
+.nssv-sta-track{height:9px;border-radius:999px;background:rgba(4,10,7,.72);border:1px solid rgba(255,255,255,.2);overflow:hidden}
+.nssv-sta-fill{display:block;height:100%;width:100%;transform-origin:left center;transform:scaleX(1);background:var(--c);box-shadow:0 0 10px var(--c);transition:transform .28s cubic-bezier(.2,.8,.2,1),background-color .3s ease}
+.nssv-sta.low .nssv-sta-track{animation:nssv-low .7s ease-in-out infinite}
+.nssv-sta.low .nssv-sta-row{animation:nssv-low .7s ease-in-out infinite}
+@keyframes nssv-low{50%{opacity:.45}}
+.nssv-sta-tired{position:absolute;left:50%;bottom:100%;transform:translate(-50%,-4px);margin-bottom:6px;padding:4px 12px;border-radius:999px;background:rgba(120,10,24,.88);border:1px solid ${DANGER};color:#fff;font-size:12px;font-weight:800;letter-spacing:.05em;white-space:nowrap;opacity:0;transition:opacity .3s ease}
+.nssv-sta-tired.on{opacity:1}
+@media (max-width:640px){.nssv-sta.touch{left:calc(max(14px,env(safe-area-inset-left)) + 56px);transform:none;width:96px;bottom:calc(max(18px,env(safe-area-inset-bottom)) + 12px)}}
+@media (prefers-reduced-motion:reduce){.nssv-start-key,.nssv-sta.low .nssv-sta-track,.nssv-sta.low .nssv-sta-row{animation:none}}
 @keyframes nssv-blink{50%{opacity:.2}}
 @media (max-width:520px){.nssv-help li kbd{min-width:84px}}
 `;
@@ -103,6 +134,7 @@ const CSS = `
 const ICON = {
   camera: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
   help: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>',
+  bolt: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>',
   wind: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V4"/><path d="M6 10l6-6 6 6"/></svg>',
 };
 
@@ -162,6 +194,23 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
   wind.style.display = 'none';
   const time = el('div', 'nssv-time', root);
   const hint = el('div', 'nssv-hint', root);
+
+  // ── Action (stamina) bar: scaleX fill, updated only when the % changes ──
+  const sta = el('div', 'nssv-sta', controls);
+  const staTired = el('div', 'nssv-sta-tired', sta, t('mstart.tired'));
+  const staRow = el('div', 'nssv-sta-row', sta, `${ICON.bolt}<span>${t('mstart.bar')}</span><b>100</b>`);
+  const staPct = staRow.querySelector('b') as HTMLElement;
+  const staTrack = el('div', 'nssv-sta-track', sta);
+  const staFill = el('i', 'nssv-sta-fill', staTrack);
+  sta.style.display = 'none';
+
+  // ── "press any key to begin" ──
+  const start = el('div', 'nssv-start', root);
+  const startCard = el('div', 'nssv-start-card', start);
+  const startTitle = el('div', 'nssv-start-title', startCard);
+  const startTip = el('div', 'nssv-start-tip', startCard);
+  const startBar = el('div', 'nssv-start-bar', startCard);
+  const startKey = el('div', 'nssv-start-key', startCard);
 
   // ── banner ──
   const banner = el('div', 'nssv-banner', root);
@@ -325,6 +374,13 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
   let timeLow = false;
   let timeShown = true;
   let aimingOn = false;
+  let startOn = false;
+  let staQ = -1;
+  let staShown = false;
+  let staTouch = false;
+  let staLow = false;
+  let staHint = false;
+  const tired = new TiredWatch();
   const hud: Hud = {
     root,
     controlsLayer: controls,
@@ -386,6 +442,41 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
       controls.classList.toggle('off', on);
       if (on) { hint.classList.remove('on'); hintOn = false; }
     },
+    setStart(info) {
+      const on = !!info;
+      if (info && !startOn) {
+        startTitle.textContent = info.title;
+        startTip.textContent = info.tip;
+        startTip.style.display = info.tip ? '' : 'none';
+        startBar.innerHTML = `${ICON.bolt}<span></span>`;
+        (startBar.lastElementChild as HTMLElement).textContent = info.bar;
+        startKey.textContent = info.key;
+      }
+      if (on === startOn) return;
+      startOn = on;
+      start.classList.toggle('on', on);
+      if (on) { hint.classList.remove('on'); hintOn = false; }
+    },
+    setStamina(v, touch = false) {
+      if (v === null || !Number.isFinite(v)) {
+        if (staShown) { staShown = false; sta.style.display = 'none'; }
+        return;
+      }
+      if (!staShown) { staShown = true; sta.style.display = ''; staQ = -1; }
+      if (touch !== staTouch) { staTouch = touch; sta.classList.toggle('touch', touch); }
+      const x = Math.max(0, Math.min(1, v));
+      const q = Math.round(x * 100);
+      if (q !== staQ) {
+        staQ = q;
+        staFill.style.transform = `scaleX(${(q / 100).toFixed(2)})`;
+        staPct.textContent = String(q);
+        sta.style.setProperty('--c', staminaColor(q / 100));
+      }
+      const vis = tired.update(x, performance.now() / 1000);
+      if (tired.low !== staLow) { staLow = tired.low; sta.classList.toggle('low', staLow); }
+      const showHint = vis > 0.01;
+      if (showHint !== staHint) { staHint = showHint; staTired.classList.toggle('on', showHint); root.classList.toggle('nssv-tired', showHint); }
+    },
     showHelp(touch = false) {
       if (help) return;
       const h = el('div', 'nssv-help', root);
@@ -400,13 +491,16 @@ export function createHud(container: HTMLElement, cb: HudCallbacks): Hud {
         el('span', '', el('kbd', '', li)).textContent = k;
         el('span', '', li).textContent = v;
       };
-      if (touch) row('◎', t(calm ? 'v2d.chint.touch' : 'v2d.hint.touch'));
-      else {
+      if (touch) {
+        row('◎', t(calm ? 'v2d.chint.touch' : 'v2d.hint.touch'));
+        row(keyLabel('mstart.helpKey'), t('mstart.helpStart'));
+        row(t('mstart.helpBarKey'), t('mstart.helpBar'));
+      } else {
         for (const [k, v] of controlRows()) row(keyLabel(k), t(v));
         if (!calm) row(t('v2d.help.mouseKey'), t('v2d.help.mouse'));
         row('V', t('view.help.camera'));
       }
-      const go = el('button', '', card, t('v2d.help.go'));
+      const go = el('button', '', card, t('mstart.helpGo'));
       go.type = 'button';
       const stop = (e: Event) => e.stopPropagation();
       h.addEventListener('pointerdown', stop);

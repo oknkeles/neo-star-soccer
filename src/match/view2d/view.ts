@@ -15,8 +15,9 @@ import { mountAimPanel, surname } from '../controls/aimPanel';
 import {
   ACCENT, GW, HL, HW, drawAimMarks, drawBall, sx, sy, drawBanner, drawSupport, drawFlash, drawGoals, drawHint, drawLabel, drawMinimap,
   drawOffscreenArrow, drawPath, drawPitch, drawPlayers, drawPowerBar, drawTarget, drawTimeBar, spawnConfetti,
-  stepConfetti, teamLooks, type Cam, type Confetto, type PlayerMeta, type Snap,
+  stepConfetti, teamLooks, drawStartPrompt, drawStaminaBar, type Cam, type Confetto, type PlayerMeta, type Snap,
 } from './render';
+import { startInfo, TiredWatch, type StartInfo } from '../controls/startPrompt';
 import '../view/strings';
 import './strings';
 
@@ -109,6 +110,12 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
   let goalCelebrated = false;
   let helpOpen = false;
   let helpEl: HTMLDivElement | null = null;
+  // "press any key to begin" fade + the Action (stamina) bar
+  let startAlpha = 0;
+  let startCopy: StartInfo | null = null;
+  let awaitedFor = 0;
+  let staShow = -1;
+  const tired = new TiredWatch();
 
   interface ReplayRun { frames: ReplayFrame[]; t: number; end: number; onDone: () => void }
   let replay: ReplayRun | null = null;
@@ -226,11 +233,11 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
     el.innerHTML = `<div style="width:min(560px,100%);max-height:100%;overflow:auto;border-radius:18px;background:rgba(8,16,11,0.94);border:1px solid rgba(198,255,61,.25);padding:18px 18px 14px;box-shadow:0 20px 60px rgba(0,0,0,.5)">
       <div style="font:400 34px 'Bebas Neue',Impact,sans-serif;color:#c6ff3d;line-height:1">${t('v2d.help.title')}</div>
       <div style="color:#9fb3a6;font:500 13px Inter,system-ui,sans-serif;margin:2px 0 10px">${t(controlMode() === 'calm' ? 'v2d.help.subCalm' : 'v2d.help.sub')}</div>
-      ${controls.touchMode ? row('◎', t(controlMode() === 'calm' ? 'v2d.chint.touch' : 'v2d.hint.touch')) : [
+      ${controls.touchMode ? [row('◎', t(controlMode() === 'calm' ? 'v2d.chint.touch' : 'v2d.hint.touch')), row(keyLabel('mstart.helpKey'), t('mstart.helpStart')), row(keyLabel('mstart.helpBarKey'), t('mstart.helpBar'))].join('') : [
         ...controlRows().map(([k, v]) => row(keyLabel(k), t(v))),
         ...(controlMode() === 'calm' ? [] : [row(t('v2d.help.mouseKey'), t('v2d.help.mouse'))]),
       ].join('')}
-      <div style="margin-top:12px;text-align:center"><button style="padding:10px 18px;border-radius:12px;background:#c6ff3d;color:#0b1210;font:800 14px Inter,system-ui,sans-serif;border:0;cursor:pointer">${t('v2d.help.go')}</button></div>
+      <div style="margin-top:12px;text-align:center"><button style="padding:10px 18px;border-radius:12px;background:#c6ff3d;color:#0b1210;font:800 14px Inter,system-ui,sans-serif;border:0;cursor:pointer">${t('mstart.helpGo')}</button></div>
     </div>`;
     el.addEventListener('pointerdown', (e) => { e.stopPropagation(); closeHelp(); });
     root.appendChild(el);
@@ -421,12 +428,31 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
     if (live && ov.info.timeLeft !== null) drawTimeBar(ctx, cam, ov.info.timeLeft);
     else if (live && s.drill) drawTimeBar(ctx, cam, 1);
 
-    // hint pill for the first seconds (and while idle)
-    if (live && !calm) {
-      const since = clock - controls.acted;
-      const a = clock < HINT_TIME ? Math.min(1, (HINT_TIME - clock) * 1.5) : since > 6 && since < 12 ? 0.85 : 0;
-      drawHint(ctx, cam, controls.hint(ov.mode), a, ov.touch ? 150 : 14);
+    // Action (stamina) bar, bottom-centre
+    let tiredVis = 0;
+    if (live && user) {
+      const sv = Math.max(0, Math.min(1, user.stamina));
+      staShow = staShow < 0 ? sv : staShow + (sv - staShow) * Math.min(1, rawDt * 8);
+      tiredVis = tired.update(sv, clock);
+      drawStaminaBar(ctx, cam, staShow, clock, {
+        label: t('mstart.bar'), tired: t('mstart.tired'), tiredVis, low: tired.low, compact: ov.touch && cam.W < 640,
+      });
     }
+
+    // "press any key to begin": the engine holds the moment until a key / tap
+    const awaiting = live && !paused && !helpOpen && s.awaitingStart === true;
+    if (awaiting) { awaitedFor += rawDt; if (!startCopy) startCopy = startInfo(setup.type, ov.touch); }
+    startAlpha = awaiting ? Math.min(1, startAlpha + rawDt * 6) : Math.max(0, startAlpha - rawDt * 9);
+    if (!awaiting && startAlpha <= 0) startCopy = null;
+
+    // hint pill for the first seconds (and while idle)
+    if (live && !calm && !awaiting) {
+      const since = clock - controls.acted;
+      const play = clock - awaitedFor; // view time without the "press any key" wait
+      const a = play < HINT_TIME ? Math.min(1, (HINT_TIME - play) * 1.5) : since > 6 && since < 12 ? 0.85 : 0;
+      drawHint(ctx, cam, controls.hint(ov.mode), a, (ov.touch ? 150 : 52) + (tiredVis > 0.01 ? 36 : 0));
+    }
+    if (startCopy && startAlpha > 0.01) drawStartPrompt(ctx, cam, startCopy, startAlpha, clock);
 
     // banner (engine-provided, e.g. GOOOL!)
     const text = s.banner;

@@ -6,6 +6,7 @@
  * +y = screen up.
  */
 import type { AnimState, Kit, Vec2, Vec3 } from '../../core/types';
+import { staminaColor, type StartInfo } from '../controls/startPrompt';
 
 export const HL = 52.5;
 export const HW = 34;
@@ -581,6 +582,177 @@ export function drawHint(ctx: CanvasRenderingContext2D, c: Cam, text: string, al
   ctx.textBaseline = 'middle';
   ctx.fillText(text, c.W / 2, y + 15.5, c.W - 40);
   ctx.globalAlpha = 1;
+}
+
+// ───────────────────────── "press any key" prompt / Action bar ─────────────────────────
+
+function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let cur = '';
+  for (const w of words) {
+    const next = cur ? `${cur} ${w}` : w;
+    if (cur && ctx.measureText(next).width > maxW) { lines.push(cur); cur = w; } else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, 3);
+}
+
+/** "Press any key to begin" over the frozen scene: title, one-line tip, Action-bar note, pulsing key pill. */
+export function drawStartPrompt(ctx: CanvasRenderingContext2D, c: Cam, info: StartInfo, alpha: number, clock: number): void {
+  if (alpha <= 0.01) return;
+  screenT(ctx, c);
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, alpha);
+  const cx = c.W / 2;
+  const cy = c.H * 0.36; // above the player (who sits mid-screen), the pitch stays readable
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(c.W * 0.5, c.H * 0.45));
+  g.addColorStop(0, 'rgba(2,6,4,0.6)');
+  g.addColorStop(0.6, 'rgba(2,6,4,0.26)');
+  g.addColorStop(1, 'rgba(2,6,4,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, c.W, c.H);
+
+  const maxW = Math.min(c.W - 32, 560);
+  const tSize = Math.round(Math.min(64, Math.max(32, c.W * 0.07)));
+  const tipSize = c.W < 560 ? 14 : 16;
+  ctx.font = `600 ${tipSize}px ${FONT}`;
+  const tipLines = info.tip ? wrapLines(ctx, info.tip, maxW) : [];
+  const tipH = tipLines.length * Math.round(tipSize * 1.4);
+  const barSize = 12;
+  const pillH = 40;
+  const total = tSize + 10 + tipH + 8 + barSize + 16 + pillH;
+  let y = Math.max(76, cy - total / 2);
+  const pop = 1 - 0.04 * (1 - Math.min(1, alpha));
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.lineJoin = 'round';
+  ctx.save();
+  ctx.translate(cx, y + tSize / 2);
+  ctx.scale(pop, pop);
+  ctx.font = `400 ${tSize}px ${DISPLAY}`;
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = Math.max(4, tSize * 0.1);
+  ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+  ctx.strokeText(info.title, 0, 0, maxW);
+  ctx.fillStyle = ACCENT;
+  ctx.fillText(info.title, 0, 0, maxW);
+  ctx.restore();
+  y += tSize + 10;
+
+  ctx.textBaseline = 'top';
+  ctx.font = `600 ${tipSize}px ${FONT}`;
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  for (const ln of tipLines) {
+    ctx.strokeText(ln, cx, y);
+    ctx.fillStyle = '#f2faf4';
+    ctx.fillText(ln, cx, y);
+    y += Math.round(tipSize * 1.4);
+  }
+  y += 8;
+  ctx.font = `500 ${barSize}px ${FONT}`;
+  ctx.fillStyle = '#b9cfc0';
+  ctx.fillText(info.bar, cx, y, maxW);
+  y += barSize + 16;
+
+  const pulse = 0.5 + 0.5 * Math.sin(clock * 4.2);
+  ctx.font = `800 ${c.W < 560 ? 15 : 17}px ${FONT}`;
+  const pw = Math.min(c.W - 24, ctx.measureText(info.key).width + 48);
+  ctx.globalAlpha = Math.min(1, alpha) * (0.62 + 0.38 * pulse);
+  rrect(ctx, cx - pw / 2, y, pw, pillH, pillH / 2);
+  ctx.fillStyle = 'rgba(198,255,61,0.16)';
+  ctx.fill();
+  ctx.strokeStyle = ACCENT;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(info.key, cx, y + pillH / 2 + 0.5, pw - 20);
+  ctx.restore();
+}
+
+export interface StaminaBarOpts {
+  label: string;
+  tired: string;
+  /** 0..1 visibility of the "tired" hint. */
+  tiredVis: number;
+  /** Below ~15 %: pulse. */
+  low: boolean;
+  /** Narrow touch layout: small bar left of the buttons. */
+  compact: boolean;
+}
+
+/** The user's Action (stamina) bar, bottom-centre: bolt + label + %, a colour-shifting fill. */
+export function drawStaminaBar(ctx: CanvasRenderingContext2D, c: Cam, v: number, clock: number, o: StaminaBarOpts): void {
+  screenT(ctx, c);
+  const x01 = Math.max(0, Math.min(1, v));
+  const w = o.compact ? 96 : Math.min(196, c.W * 0.42);
+  const x = o.compact ? 60 : c.W / 2 - w / 2;
+  const h = 9;
+  const y = c.H - 16 - h;
+  const col = staminaColor(x01);
+  const a = o.low ? 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(clock * 9)) : 1;
+  ctx.save();
+  ctx.globalAlpha = a;
+  // label row: bolt, ACTION, %
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  const bx = x + 1;
+  const by = y - 17;
+  ctx.moveTo(bx + 5, by);
+  ctx.lineTo(bx, by + 8);
+  ctx.lineTo(bx + 4, by + 8);
+  ctx.lineTo(bx + 3, by + 14);
+  ctx.lineTo(bx + 9, by + 5);
+  ctx.lineTo(bx + 5, by + 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.font = `800 11px ${FONT}`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#d8e8de';
+  ctx.fillText(o.label.toUpperCase(), x + 14, by + 7.5);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = col;
+  ctx.fillText(String(Math.round(x01 * 100)), x + w, by + 7.5);
+  // track + fill
+  rrect(ctx, x, y, w, h, h / 2);
+  ctx.fillStyle = 'rgba(4,10,7,0.72)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  const fw = (w - 2) * x01;
+  if (fw > 1) {
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 8;
+    rrect(ctx, x + 1, y + 1, Math.max(h - 2, fw), h - 2, (h - 2) / 2);
+    ctx.fillStyle = col;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  ctx.restore();
+  if (o.tiredVis > 0.01) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, o.tiredVis);
+    ctx.font = `800 12px ${FONT}`;
+    const tw = ctx.measureText(o.tired).width + 24;
+    const tx = o.compact ? x + w / 2 - tw / 2 : c.W / 2 - tw / 2;
+    const ty = y - 17 - 34;
+    rrect(ctx, tx, ty, tw, 24, 12);
+    ctx.fillStyle = 'rgba(120,10,24,0.88)';
+    ctx.fill();
+    ctx.strokeStyle = '#ff4f64';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(o.tired, tx + tw / 2, ty + 12.5);
+    ctx.restore();
+  }
 }
 
 export function drawBanner(ctx: CanvasRenderingContext2D, c: Cam, text: string, age: number, tone: 'great' | 'good' | 'bad' | 'neutral'): void {

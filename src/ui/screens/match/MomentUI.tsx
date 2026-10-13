@@ -1,17 +1,21 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import SoundToggle from '../../components/SoundToggle';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Camera, ChevronRight, FastForward, Play, RotateCcw } from 'lucide-react';
+import { Camera, ChevronRight, FastForward, Play, RotateCcw, Zap } from 'lucide-react';
 import type { CameraMode, MomentResult, MomentType } from '../../../core/types';
 import type { MomentKind } from '../../../match/flow/api';
 import { t } from '../../../core/i18n';
 import { getSettings } from '../../../core/settings';
 import '../../../match/view2d/strings';
+import '../../../match/controls/startPrompt';
 import { Button, clsx } from '../../components/kit';
 import { resultTone, type ResultTone } from './helpers';
 
-/** The moment starts by itself after this short beat (no click needed). */
-const AUTO_START_MS = 850;
+/**
+ * The intro card hands over to the scene after this short beat (no click needed). Kept short:
+ * the moment itself now waits on "press any key to begin", so the player gets time there.
+ */
+const AUTO_START_MS = 550;
 /** The outcome card returns to the ticker after this (hover / tap holds it). */
 const RESULT_MS = 1200;
 
@@ -29,7 +33,7 @@ export function momentTip(type: MomentType, kind: MomentKind | null): string {
   return kind === 'shootout' ? t(`${ns}.shootout`) : t(`${ns}.${type}`);
 }
 
-/** Short intro card before a moment (minute, title, one-line tip); starts by itself in < 1 s. */
+/** Short intro card before a moment (minute, title, one-line tip); hands over to the scene in ~0.5 s. */
 export function MomentIntro({ type, kind, clock, scoreLine, onPlay, onSimulate }: {
   type: MomentType; kind: MomentKind | null; clock: string; scoreLine: ReactNode; onPlay: () => void; onSimulate: () => void;
 }) {
@@ -92,7 +96,10 @@ export function MomentIntro({ type, kind, clock, scoreLine, onPlay, onSimulate }
             <span className="relative flex items-center gap-2"><Play size={18} />{t('match.mo.play')}</span>
           </Button>
         </motion.div>
-        {auto && <div className="mt-2 text-[11px] text-ink-mute">{t('match.mo.autostart')}</div>}
+        <div className="mt-3 flex flex-col items-center gap-1 text-[11px] text-ink-mute">
+          <span>{t('mstart.introNext')}</span>
+          <span className="inline-flex items-center gap-1 text-ink-dim"><Zap size={12} className="text-accent shrink-0" />{t('mstart.barTip')}</span>
+        </div>
       </div>
     </motion.div>
   );

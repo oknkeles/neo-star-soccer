@@ -105,6 +105,25 @@ export class Engine {
   /** Opponents the user had to beat (dribble stat): agent index → time first engaged. */
   engaged = new Map<number, number>();
   drill: { attempt: number; attempts: number; score: number; resolveAt: number; kicked: boolean; best: number[] } | null = null;
+  /**
+   * Sim time until which opponents may not tackle / dispossess the user: a short grace after the
+   * player leaves the "press any key" hold (0.8 s easy, 0.5 s normal, 0.3 s hard).
+   */
+  graceUntil = -1;
+  /**
+   * Action bar (the user's MomentPlayerState.stamina, 0..1): drains while he sprints / carries the
+   * ball, regenerates off the ball. Drain multiplier from match fitness, the stamina attribute and
+   * the difficulty.
+   */
+  drainMul = 1;
+  /** Metres the user has carried the ball since he last gained it (defenders react to long carries). */
+  userCarry = 0;
+  /** 0..1: how far into a long solo carry the user is (double team / the line drops). */
+  longCarry = 0;
+  /** Sim time of the user's last pass (the bar refills quickly after it). */
+  passedAt = -9;
+  /** Below ~15 % of the bar the user can't sprint (until it is back above ~30 %). */
+  sprintLock = false;
   private listeners: ((e: MomentEvent) => void)[] = [];
   private acc = 0;
   /** Simulated seconds not yet stepped (0..DT): views extrapolate positions by it for smooth motion. */
@@ -133,6 +152,39 @@ export class Engine {
     this.focusBudget = 1.5 + 2.0 * comp;
     initMoment(this);
     this.updateOffsideLine();
+    // "press any key to begin": open-play moments wait for the player before anything moves.
+    // Set pieces and drills keep their own frozen-aim start (they already wait for his kick).
+    this.state.awaitingStart = !this.frozen && !this.drill && this.setPiece === null;
+    // the action bar starts full; tired legs (match fitness) and a low stamina attribute drain it faster
+    const u = this.user;
+    const fit = clamp((Number.isFinite(u.spec.fitness) ? u.spec.fitness : 90) / 100, 0.35, 1);
+    const diff = clamp(Number.isFinite(setup.difficulty) ? setup.difficulty : 0.5, 0, 1);
+    this.drainMul = (1.22 - 0.42 * (clamp(u.a.stamina, 1, 99) / 99)) * (1 + 0.7 * (1 - fit)) * (0.9 + 0.35 * diff);
+    u.st.stamina = 1;
+  }
+
+  /** Grace (s) after the start in which opponents can't take the ball off the user. */
+  private graceFor(): number {
+    const d = clamp(Number.isFinite(this.setup.difficulty) ? this.setup.difficulty : 0.5, 0, 1);
+    return clamp(0.8 - (d - 0.3) * 1.5, 0.3, 0.8);
+  }
+
+  /** Leave the start hold: play begins (the intro beat, then the whistle). */
+  private begin(): void {
+    const s = this.state;
+    if (!s.awaitingStart) return;
+    s.awaitingStart = false;
+    this.graceUntil = Math.max(s.time, this.introEnd) + this.graceFor();
+  }
+
+  /** Opponents may not tackle / dispossess the user yet (start grace). */
+  inGrace(): boolean {
+    return this.state.time < this.graceUntil;
+  }
+
+  /** 0..1 how spent the user's action bar is (0 while it is above half). */
+  userLow(): number {
+    return clamp((0.5 - this.user.st.stamina) / 0.5, 0, 1);
   }
 
   // ───────────────────────── setup ─────────────────────────
@@ -208,6 +260,8 @@ export class Engine {
     const s = this.state;
     if (s.phase === 'ended') return;
     const real = Number.isFinite(dt) ? clamp(dt, 0, 0.1) : 0;
+    // "press any key to begin": nothing moves and no clock runs until the player starts
+    if (s.awaitingStart) return;
     // calm controls: nothing moves (and no clock runs) while the user aims
     if (this.ctl.aiming && this.ctl.freeze) return;
     // slow-motion focus is a real-time budget
@@ -233,6 +287,14 @@ export class Engine {
     if (s.phase === 'ended' || !cmd || typeof cmd !== 'object') return;
     if (cmd.kind === 'skip') { this.skip(); return; }
     if (s.phase === 'outcome') return;
+    if (s.awaitingStart) {
+      // any real key / button starts the moment (releasing a key or a zero stick does not)
+      const wakes = cmd.kind === 'start' || cmd.kind === 'kick' || cmd.kind === 'aimStart' || cmd.kind === 'callForBall' || cmd.kind === 'tackle'
+        || (cmd.kind === 'sprint' && !!cmd.on) || (cmd.kind === 'move' && !!cmd.target)
+        || (cmd.kind === 'moveDir' && hyp(cmd.dir?.x ?? 0, cmd.dir?.y ?? 0) > 1e-3);
+      if (!wakes) return;
+      this.begin();
+    }
     const c = this.ctl;
     this.log.idle = 0;
     switch (cmd.kind) {
@@ -586,6 +648,7 @@ export class Engine {
       L.bestXg = Math.max(L.bestXg, rec.xg);
     } else {
       L.passes++;
+      this.passedAt = s.time;
       // a user clearance while defending
       if (this.attackSide === 'them' && (p.power > 0.55 || p.loft > 0.3)) L.cleared = true;
     }
@@ -648,6 +711,8 @@ export class Engine {
     const s = this.state;
     if (a.stun > 0 || a.cool > 0) return;
     const c = this.owner;
+    // start grace: nobody takes the ball off the user in the first beat of the moment
+    if (c && c.isUser && a.side !== c.side && this.inGrace()) return;
     const b = s.ball.pos;
     const d = hyp(b.x - a.st.pos.x, b.y - a.st.pos.y);
     const reach = slide ? 2.4 : 1.35;
@@ -681,6 +746,8 @@ export class Engine {
     let pWin = 0.46 + 0.62 * (T - D) + (slide ? 0.1 : 0) - (behind ? 0.18 : 0) - (d > 1.0 ? 0.08 : 0) + (csp > 6 ? 0.04 : 0);
     if (a.side === 'them') pWin += 0.22 * (this.setup.difficulty - 0.5) - (c.isUser ? 0.12 : 0.08) * this.ease;
     if (a.isUser) pWin += 0.12 * this.ease;
+    // a spent action bar: he can't hold off the challenge (long solo runs end here)
+    if (c.isUser) pWin += 0.28 * this.userLow();
     if (a.side === 'us' && !a.isUser && this.attackSide === 'them') pWin -= 0.1;
     pWin = clamp(pWin, 0.08, 0.9);
     let pFoul = (behind ? 0.42 : 0.05) + (slide ? 0.1 : 0) + (1 - T) * 0.1;
@@ -951,6 +1018,8 @@ export class Engine {
         u.urgency = 0;
       }
     }
+    // an empty action bar: no sprint until it has refilled a little
+    if (this.sprintLock && u.urgency > 0.8) u.urgency = 0.8;
     if (c.sprint && hyp(st.vel.x, st.vel.y) > 0.75 * u.topSpeed) this.log.sprintTime += DT;
     if (!active) return;
     if (this.owner === u) {
@@ -1050,6 +1119,7 @@ export class Engine {
       } else if (seen >= 0 && rx < -1.2 && d < 5) {
         this.engaged.set(o.i, -1);
         this.log.dribbles++;
+        u.st.stamina = Math.max(0, u.st.stamina - 0.05 * this.drainMul);
       }
     }
   }
@@ -1078,7 +1148,8 @@ export class Engine {
       const tx = a.target.x - st.pos.x;
       const ty = a.target.y - st.pos.y;
       const d = hyp(tx, ty);
-      const fatigue = 0.78 + 0.22 * st.stamina;
+      // (the user: his action bar only slows him once it is below half)
+      const fatigue = a.isUser ? 1 - 0.26 * this.userLow() : 0.78 + 0.22 * st.stamina;
       const sprinting = a.urgency >= 0.97;
       const owns = this.owner === a;
       let vmax = a.topSpeed * clamp(a.urgency, 0, 1) * fatigue;
@@ -1127,8 +1198,9 @@ export class Engine {
       const f = faceStep(st.facing, a.turnV ?? 0, this.wantFacing(a, sp, dvx, dvy, owns), a.isUser ? 260 : 150, a.isUser ? 14 : sp > 4 ? 8 : 11, DT);
       st.facing = f.facing;
       a.turnV = f.turnV;
-      // stamina
-      if (sprinting && sp > 0.7 * a.topSpeed) {
+      // stamina (the user's is his action bar)
+      if (a.isUser) this.userBar(a, sp, owns, sprinting);
+      else if (sprinting && sp > 0.7 * a.topSpeed) {
         st.stamina = Math.max(0.05, st.stamina - DT * 0.022 * (1.45 - a.a.stamina / 99));
       } else if (sp < 0.5 * a.topSpeed) {
         st.stamina = Math.min(1, st.stamina + DT * 0.006);
@@ -1139,6 +1211,31 @@ export class Engine {
 
   private wantV: Vec2 = { x: 0, y: 0 };
 
+  /**
+   * The action bar: sprinting drains it, carrying the ball more (most at a sprint with the ball),
+   * each opponent taken on a little (trackDribbles); off the ball it refills, quickly after a pass.
+   * ~35 m of sprint-dribbling empties it; a 10–20 m carry, a pass and a run never feel it.
+   */
+  private userBar(a: Agent, sp: number, owns: boolean, sprinting: boolean): void {
+    const st = a.st;
+    const hard = sp > 0.62 * a.topSpeed;
+    let drain = 0;
+    if (owns) {
+      if (sp > 2.2) drain = sprinting && hard ? 0.215 : 0.06 + 0.06 * clamp((sp - 2.2) / 4.5, 0, 1);
+      this.userCarry += sp * DT;
+    } else if (sprinting && hard) drain = 0.055;
+    if (!owns) this.userCarry = Math.max(0, this.userCarry - DT * 12);
+    this.longCarry = owns ? clamp((this.userCarry - 18) / 12, 0, 1) : Math.max(0, this.longCarry - DT * 0.8);
+    if (drain > 0) st.stamina = Math.max(0, st.stamina - DT * drain * this.drainMul);
+    else {
+      const t = this.state.time;
+      const regen = owns ? 0.04 : t - this.passedAt < 2.2 ? 0.34 : sp < 2.2 ? 0.17 : 0.1;
+      st.stamina = Math.min(1, st.stamina + DT * regen);
+    }
+    if (st.stamina < 0.15) this.sprintLock = true;
+    else if (st.stamina > 0.3) this.sprintLock = false;
+  }
+
   /** Locomotion limits for an agent this tick (the user's player answers a little quicker). */
   private locoParams(a: Agent, fatigue: number, owns: boolean): LocoParams {
     const acc = clamp(a.a.acceleration, 1, 99) / 99;
@@ -1146,7 +1243,7 @@ export class Engine {
     let brake = 7.4 + 2.6 * acc;
     let grip = 9.5 + 3.5 * acc;
     if (a.isUser) {
-      a0 *= 1.22 + 0.25 * this.ease;
+      a0 *= (1.22 + 0.25 * this.ease) * (1 - 0.3 * this.userLow());
       brake *= 1.08 + 0.15 * this.ease;
       grip *= 1.12 + 0.2 * this.ease;
     }
@@ -1255,7 +1352,9 @@ export class Engine {
       if (sp > 2.5 && !a.windup) {
         const drib = clamp(a.a.dribbling, 1, 99) / 99;
         const pr = this.pressureOn(a);
-        const pHeavy = (Math.max(0, sp / a.topSpeed - 0.62) * (1 - drib) * 1.1 + pr * 0.05 * (1 - drib)) * (a.isUser ? Math.max(0.05, 1 - 1.15 * this.ease) : 1);
+        let pHeavy = (Math.max(0, sp / a.topSpeed - 0.62) * (1 - drib) * 1.1 + pr * 0.05 * (1 - drib)) * (a.isUser ? Math.max(0.05, 1 - 1.15 * this.ease) : 1);
+        // a spent action bar: heavy legs, heavy touches
+        if (a.isUser) pHeavy = this.inGrace() ? 0 : pHeavy + this.userLow() * (0.1 + 0.08 * (1 - drib)) * (1 - 0.4 * this.ease);
         if (this.rng.chance(pHeavy)) {
           // heavy touch: the ball runs away from him
           const fx = Math.cos(st.facing);
@@ -1277,7 +1376,7 @@ export class Engine {
     const fy = Math.sin(st.facing);
     // soft touches: after each touch the ball rolls a little ahead and the runner catches it up
     // (continuous offset, no dart forward at the touch)
-    const push = 0.04 + 0.075 * sp;
+    const push = (0.04 + 0.075 * sp) * (a.isUser ? 1 + 1.1 * this.userLow() : 1);
     const lead = 0.38 + push * Math.sin(Math.PI * clamp(a.touch, 0, 1));
     const tx = st.pos.x + fx * lead;
     const ty = st.pos.y + fy * lead;
@@ -1402,6 +1501,8 @@ export class Engine {
     const speed = ballSpeed(b);
     const k = this.lastKick;
     const userBall = this.passForUser() && Number.isFinite(this.user.eit) && this.user.eit < 3.5 && this.user.stun <= 0;
+    // start grace: opponents leave the ball at / played to the user alone for a beat
+    const grace = this.inGrace() && (userBall || hyp(b.pos.x - this.user.st.pos.x, b.pos.y - this.user.st.pos.y) < 2.5);
     let best: Agent | null = null;
     let bestD = Infinity;
     for (const a of this.agents) {
@@ -1419,6 +1520,7 @@ export class Engine {
       }
       if (a.cool > 0 || a.stun > 0 || a.passive || a.wall) continue;
       if (fresh) continue;
+      if (grace && a.side !== this.user.side) continue;
       // team-mates get out of the way of their own side's shot
       if (!a.isUser && k && k.isShot && k.side === a.side && k.result === 'pending' && s.time - k.t < 2.5) continue;
       // ...and leave a ball played to the user to him (no nicking his cross / pass)

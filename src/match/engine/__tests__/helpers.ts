@@ -62,6 +62,7 @@ export function makeSetup(type: MomentType, o: SetupOpts = {}): MomentSetup {
 /** Step at 60 fps until finished (or `maxSeconds`), optionally driving the bot. */
 export function run(e: MomentEngine, opts: { bot?: Rng | null; maxSeconds?: number; each?: (e: MomentEngine) => void } = {}): MomentResult | null {
   const max = opts.maxSeconds ?? 60;
+  e.input({ kind: 'start' });
   for (let f = 0; f < max * 60 && !e.isFinished(); f++) {
     if (opts.bot) botStep(e, opts.bot);
     opts.each?.(e);
@@ -72,5 +73,6 @@ export function run(e: MomentEngine, opts: { bot?: Rng | null; maxSeconds?: numb
 
 export function play(type: MomentType, seed: number, o: SetupOpts = {}, bot = true): MomentResult | null {
   const e = createMoment(makeSetup(type, { ...o, seed }));
+  e.input({ kind: 'start' });
   return run(e, { bot: bot ? new Rng(seed * 7 + 3) : null });
 }

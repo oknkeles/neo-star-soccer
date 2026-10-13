@@ -120,6 +120,8 @@ export function computeLaunch(p: KickParams, k: Kicker, spec: KickSpec, rng: Rng
     const c = clamp(a.curl, 1, 99) / 99;
     wz += rng.normal(0, (1.5 + 6 * (1 - c)) * Math.sqrt(mul)) * (Math.abs(curl) > 0.05 ? 1 : 0.4);
   }
+  // tired legs (a spent action bar): less pace on the ball
+  speed *= 1 - 0.16 * clamp((0.45 - k.stamina) / 0.45, 0, 1);
   speed = Math.max(1, speed);
 
   const ch = Math.cos(phi);

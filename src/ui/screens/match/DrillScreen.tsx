@@ -5,7 +5,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowLeft, ChevronRight, Crosshair, Footprints, Hand, MousePointerClick, Play, Target, X } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Crosshair, Footprints, Hand, MousePointerClick, Play, Target, X, Zap } from 'lucide-react';
 import type { MomentResult, MomentSetup } from '../../../core/types';
 import { DRILL_TYPES, drillSetup, safeAutoResolve, type DrillType } from '../../../match/flow/api';
 import { updateSettings } from '../../../core/settings';
@@ -20,6 +20,7 @@ import { useLiveSettings } from './parts';
 import { MomentStage, type StageApi } from './MomentStage';
 import { MomentHud } from './MomentUI';
 import '../../../match/flow/strings';
+import '../../../match/controls/startPrompt';
 
 type Phase = 'intro' | 'play' | 'done';
 
@@ -185,6 +186,7 @@ export default function DrillScreen({ params }: { params: Record<string, string>
           <li className="flex gap-2.5"><MousePointerClick size={18} className="text-accent shrink-0" />{t(settings.controlMode === 'fast' ? 'v2d.drill.shoot' : 'v2d.cdrill.shoot')}</li>
           <li className="flex gap-2.5"><Footprints size={18} className="text-accent shrink-0" />{t('v2d.drill.move')}</li>
           <li className="flex gap-2.5"><Hand size={18} className="text-accent shrink-0" />{t(settings.controlMode === 'fast' ? 'v2d.drill.pass' : 'v2d.cdrill.pass')}</li>
+          <li className="flex gap-2.5"><Zap size={18} className="text-accent shrink-0" />{t('mstart.drillBar')}</li>
         </ul>
       </Card>
       <AnimatePresence>

@@ -66,6 +66,7 @@ const norm = (x: number, y: number): Vec2 => { const l = Math.hypot(x, y) || 1; 
 
 function episode(type: MomentType, seed: number, difficulty: number, variant: Variant, acc: Acc): void {
   const me = createMoment(makeSetup(type, { seed, difficulty, timeLimit: 16 }));
+  me.input({ kind: 'start' });
   const e = me as unknown as Engine;
   const u = e.user;
   const uid = u.id;
@@ -287,6 +288,7 @@ export function coordinatorCost(): number {
   let n = 0;
   for (const type of ['open_play', 'counter', 'build_up'] as MomentType[]) {
     const me = createMoment(makeSetup(type, { seed: 4, difficulty: 0.4 }));
+    me.input({ kind: 'start' });
     const e = me as unknown as Engine;
     for (let f = 0; f < 60 * 1.5; f++) me.step(STEP);
     for (let i = 0; i < 300; i++) {

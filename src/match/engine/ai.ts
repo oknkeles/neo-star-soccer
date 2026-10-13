@@ -406,7 +406,9 @@ function assignPressers(e: Engine): Agent[] {
     const style = (x.a.side === 'us' ? e.setup.us.style : e.setup.them.style);
     if (out.length === 1) {
       const deep = distToGoal(c.st.pos, c.dir) < 30;
-      if (!(style === 'pressing' || deep) || x.tt > 1.6) break;
+      // a long solo carry by the user: the nearest two converge on him (double team)
+      const solo = c.isUser && e.longCarry > 0;
+      if (!(style === 'pressing' || deep || solo) || x.tt > (solo ? 1.6 + 1.4 * e.longCarry : 1.6)) break;
     }
     out.push(x.a);
   }
@@ -814,17 +816,26 @@ function defendOffBall(e: Engine, a: Agent, pressers: Agent[] | null, marks: Map
     const gy = ownGoal.y - c.st.pos.y;
     const gl = hyp(gx, gy) || 1;
     const d = hyp(c.st.pos.x - a.st.pos.x, c.st.pos.y - a.st.pos.y);
-    const close = pressers[0] === a ? 0.9 : 3.5;
-    const target = { x: c.st.pos.x + (gx / gl) * close, y: c.st.pos.y + (gy / gl) * close };
+    const solo = c.isUser && a.side !== c.side ? e.longCarry : 0;
+    const first = pressers[0] === a;
+    // (double team: the second man closes in on the side the carrier is heading for)
+    const close = first ? 0.9 : 3.5 - 2.0 * solo;
+    let target = { x: c.st.pos.x + (gx / gl) * close, y: c.st.pos.y + (gy / gl) * close };
+    if (!first && solo > 0) {
+      const vl = hyp(c.st.vel.x, c.st.vel.y);
+      if (vl > 1) target = { x: target.x + (c.st.vel.x / vl) * 2.2 * solo, y: target.y + (c.st.vel.y / vl) * 2.2 * solo };
+    }
     const diff = clamp(e.setup.difficulty, 0, 1);
-    // casual play: opponents close the user down more slowly
-    const soft = c.isUser ? 0.1 : 0.08;
+    // casual play: opponents close the user down more slowly (not once he goes on a long solo run)
+    const soft = (c.isUser ? 0.1 : 0.08) * (1 - solo);
     let urg = a.side === 'them' ? (0.8 + 0.2 * diff) * (1 - soft * e.ease) : 0.9;
-    if (d > 8) urg = a.side === 'them' ? 1 - (c.isUser ? 0.22 : 0.12) * e.ease : 1;
+    if (d > 8) urg = a.side === 'them' ? 1 - (c.isUser ? 0.22 : 0.12) * e.ease * (1 - solo) : 1;
+    // start grace: they don't fly into him in the first beat
+    if (c.isUser && e.inGrace()) urg *= 0.6;
     goTo(a, target, urg, 'press');
-    // tackle attempts
+    // tackle attempts (both men of a double team go for it)
     const bd = hyp(s.ball.pos.x - a.st.pos.x, s.ball.pos.y - a.st.pos.y);
-    if (pressers[0] === a && bd < 1.3 && a.cool <= 0 && a.stun <= 0 && e.state.phase !== 'outcome') {
+    if ((first || solo > 0.3) && bd < 1.3 && a.cool <= 0 && a.stun <= 0 && e.state.phase !== 'outcome') {
       let rate = 0.12 + 0.18 * (a.a.tackling / 99);
       if (a.side === 'them') rate *= (0.75 + 0.6 * diff) * (1 - 0.25 * e.ease) * (c.isUser ? 1 - 0.25 * e.ease : 1);
       if (a.side === 'us' && e.attackSide === 'them') rate *= 0.45;
@@ -852,6 +863,12 @@ function defendOffBall(e: Engine, a: Agent, pressers: Agent[] | null, marks: Map
     ty = my * w + home.y * (1 - w);
     urg = danger ? 0.9 : 0.75;
     a.duty = 'mark';
+  }
+  // the user on a long solo carry: the line drops off and covers (no space in behind)
+  if (c && c.isUser && a.side !== c.side && e.longCarry > 0) {
+    tx += c.dir * 5 * e.longCarry;
+    ty = ty * (1 - 0.25 * e.longCarry) + c.st.pos.y * 0.25 * e.longCarry;
+    urg = Math.max(urg, 0.85);
   }
   // block the shooting lane when the carrier is in range
   if (c && distToGoal(c.st.pos, c.dir) < 26) {

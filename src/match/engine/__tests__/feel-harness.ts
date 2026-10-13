@@ -40,6 +40,7 @@ interface LocoRun { t90: number; tJog: number; stopDist: number; stopT: number; 
 /** Drive one agent's locomotion alone (everyone else frozen) through accelerate / stop / cut / reverse. */
 function locoRun(diff: number, who: 'user' | 'ai'): LocoRun {
   const me = createMoment(makeSetup('open_play', { seed: 2, difficulty: diff }));
+  me.input({ kind: 'start' });
   const e = me as unknown as Engine;
   for (let i = 0; i < 40; i++) me.step(STEP);
   const subj: Agent = who === 'user' ? e.user : e.agents.find((a) => a.side === 'us' && !a.isUser && !a.isGK && a.slot.role === 'CM')!;
@@ -118,6 +119,7 @@ function locoRun(diff: number, who: 'user' | 'ai'): LocoRun {
 /** Body orientation and foot-slide estimate over a live open_play moment (AI players). */
 function orientation(): { jitterDeg: number; snaps: number; skate: number; footSlide: number; kickLagS: number; kickLagAiS: number } {
   const me = createMoment(makeSetup('open_play', { seed: 9, difficulty: 0.5 }));
+  me.input({ kind: 'start' });
   const hist = new Map<string, number[]>();
   let skateN = 0; let runN = 0;
   let slideSum = 0; let slideN = 0;
@@ -291,6 +293,7 @@ function passEpisodes(mode: 'fast' | 'calm', diff: number, seeds: number, userAc
   for (const type of ['open_play', 'build_up', 'counter'] as MomentType[]) {
     for (let seed = 1; seed <= seeds; seed++) {
       const me = createMoment(makeSetup(type, { seed, difficulty: diff, timeLimit: 16 }));
+      me.input({ kind: 'start' });
       const e = me as unknown as Engine;
       const u = e.user;
       const pw = new PassWatch(e, userAcc, (k) => k.user);
@@ -343,6 +346,7 @@ function passEpisodes(mode: 'fast' | 'calm', diff: number, seeds: number, userAc
 function oppPasses(diff: number, seeds: number, acc: PassAcc): void {
   for (let seed = 1; seed <= seeds; seed++) {
     const me = createMoment(makeSetup('defend', { seed, difficulty: diff, timeLimit: 16 }));
+    me.input({ kind: 'start' });
     const e = me as unknown as Engine;
     const w = new PassWatch(e, acc, (k) => k.side === 'them' && k.target >= 0);
     for (let f = 0; f < 60 * 25 && !me.isFinished(); f++) {
@@ -411,6 +415,7 @@ class CrossWatch {
 function wingCross(mode: 'fast' | 'calm' | 'calmHigh', diff: number, seeds: number, acc: CrossAcc): void {
   for (let seed = 1; seed <= seeds; seed++) {
     const me = createMoment(makeSetup('wing_cross', { seed, difficulty: diff, timeLimit: 16 }));
+    me.input({ kind: 'start' });
     const e = me as unknown as Engine;
     const u = e.user;
     const w = new CrossWatch(e, acc, (k) => k.user && !k.isShot && e.kicks.filter((x) => x.user).length === 1);
@@ -454,6 +459,7 @@ function wingCross(mode: 'fast' | 'calm' | 'calmHigh', diff: number, seeds: numb
 function crossReceive(mode: 'hold' | 'steer' | 'calm', diff: number, seeds: number, acc: CrossAcc): void {
   for (let seed = 1; seed <= seeds; seed++) {
     const me = createMoment(makeSetup('cross_receive', { seed, difficulty: diff, timeLimit: 16 }));
+    me.input({ kind: 'start' });
     const e = me as unknown as Engine;
     const u = e.user;
     const w = new CrossWatch(e, acc, (k) => !k.user && k.cross);
@@ -510,6 +516,7 @@ function mateCrosses(diff: number, seeds: number, acc: CrossAcc): void {
   for (const type of ['open_play', 'counter', 'wing_cross'] as MomentType[]) {
     for (let seed = 1; seed <= seeds; seed++) {
       const me = createMoment(makeSetup(type, { seed, difficulty: diff, timeLimit: 18 }));
+      me.input({ kind: 'start' });
       const e = me as unknown as Engine;
       const u = e.user;
       const w = new CrossWatch(e, acc, (k) => !k.user && k.cross && k.side === 'us');

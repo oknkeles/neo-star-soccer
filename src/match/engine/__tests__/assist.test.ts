@@ -61,6 +61,7 @@ describe('assisted controls play-test', () => {
 describe('direction-based controls (shoot where you run, F = pass / call)', () => {
   it('a run at goal snaps into the goal mouth; a run elsewhere is struck exactly that way', () => {
     const e = createMoment(makeSetup('one_on_one', { seed: 3, difficulty: 0.3 }));
+    e.input({ kind: 'start' });
     for (let i = 0; i < 90; i++) e.step(1 / 60);
     const b = e.state.ball.pos;
     const toGoal = { x: HL - b.x, y: -b.y };
@@ -89,6 +90,7 @@ describe('direction-based controls (shoot where you run, F = pass / call)', () =
       for (const type of ['build_up', 'open_play', 'counter'] as MomentType[]) {
         for (let seed = 1; seed <= 12; seed++) {
           const e = createMoment(makeSetup(type, { seed, difficulty: diff, timeLimit: 16 }));
+          e.input({ kind: 'start' });
           const evs: { t: number; ev: MomentEvent }[] = [];
           e.on((ev) => evs.push({ t: e.state.time, ev }));
           let calledAt = -1;

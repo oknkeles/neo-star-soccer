@@ -43,6 +43,7 @@ export function mountTouchControls(root: HTMLElement, controls: Controls): Touch
   zone.addEventListener('pointerdown', (e) => {
     if (stickId !== null) return;
     e.preventDefault();
+    if (controls.tryStart()) return; // "tap to begin": the first touch only starts the moment
     stickId = e.pointerId;
     zone.setPointerCapture?.(e.pointerId);
     const r = zone.getBoundingClientRect();
@@ -67,7 +68,14 @@ export function mountTouchControls(root: HTMLElement, controls: Controls): Touch
     b.style.cssText = `position:absolute;right:calc(${right}px + env(safe-area-inset-right));bottom:calc(${bottom}px + env(safe-area-inset-bottom));width:${size}px;height:${size}px;border-radius:50%;pointer-events:auto;touch-action:none;` +
       `font:800 ${Math.round(size * 0.2)}px Inter,system-ui,sans-serif;letter-spacing:0.04em;color:${strong ? '#0b1210' : '#fff'};` +
       `background:${strong ? 'rgba(198,255,61,0.92)' : 'rgba(10,20,14,0.6)'};border:2px solid ${strong ? '#e8ffb0' : 'rgba(255,255,255,0.35)'};box-shadow:0 6px 18px rgba(0,0,0,0.35);`;
-    b.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); b.setPointerCapture?.(e.pointerId); b.style.transform = 'scale(0.92)'; controls.touchButton(kind, true); });
+    b.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (controls.tryStart()) return; // the first touch only starts the moment
+      b.setPointerCapture?.(e.pointerId);
+      b.style.transform = 'scale(0.92)';
+      controls.touchButton(kind, true);
+    });
     const up = (e: PointerEvent) => { e.preventDefault(); b.style.transform = ''; controls.touchButton(kind, false); };
     b.addEventListener('pointerup', up);
     b.addEventListener('pointercancel', up);

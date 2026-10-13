@@ -15,6 +15,7 @@ import { createHud, outcomeTone, type AimMark } from './hud';
 import { Controls, type ControlsMode } from '../controls/controls';
 import { mountAimPanel, surname } from '../controls/aimPanel';
 import { mountTouchControls, type TouchUi } from '../controls/touch';
+import { startInfo } from '../controls/startPrompt';
 import { goalkeeperColor, resolveKitClash, shade, shortsColor } from './palette';
 import { buildAim, buildSupportRings, buildUserMarker } from './three/aim';
 import { buildBall } from './three/ball';
@@ -374,6 +375,9 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
   let windTimer = 0;
   let hintMode: ControlsMode | null = null;
   let hintSince = 0;
+  // "press any key to begin": shown while the engine holds the moment; the hint timers wait for it
+  let awaitShown = false;
+  let awaitedFor = 0;
   let lastPath: Vec3[] | null = null;
   let aimVersion = -1;
   let aimLook: Vec3 | null = null;
@@ -568,11 +572,19 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
     world.update(rawDt, clock, camera, rig.target);
 
     // HUD.
+    const awaiting = live && !paused && !helpOpen && s.awaitingStart === true;
+    if (awaiting !== awaitShown) {
+      awaitShown = awaiting;
+      hud.setStart(awaiting ? startInfo(setup.type, controls.touchMode) : null);
+    }
+    if (awaiting) awaitedFor += rawDt;
+    hud.setStamina(live && user ? user.stamina : null, controls.touchMode);
     if (live && ov) {
       hud.setTime(ov.info.timeLeft ?? (setup.timeLimit > 0 ? 1 - s.time / setup.timeLimit : null));
-      if (ov.mode !== hintMode) { hintMode = ov.mode; hintSince = clock; }
+      if (ov.mode !== hintMode || awaiting) { hintMode = ov.mode; hintSince = clock; }
       const idle = clock - controls.acted;
-      const showHint = !helpOpen && (clock - hintSince < HINT_TIME && clock < 25 || (idle > 6 && idle < 12));
+      const play = clock - awaitedFor; // view time without the "press any key" wait
+      const showHint = !helpOpen && !awaiting && (clock - hintSince < HINT_TIME && play < 25 || (idle > 6 && idle < 12));
       hud.setHint(showHint ? controls.hint(ov.mode) : null);
       const head = ov.charge && user ? headScreen(user.id, 0.55) : null;
       const badge = pick?.id ? headScreen(pick.id, 0.45) : null;

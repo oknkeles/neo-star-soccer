@@ -14,6 +14,7 @@ export interface Human {
 
 export function humanPlay(type: MomentType, seed: number, difficulty: number, h: Human): { r: MomentResult | null; events: MomentEvent[] } {
   const e: MomentEngine = createMoment(makeSetup(type, { seed, difficulty, timeLimit: 16 }));
+  e.input({ kind: 'start' });
   const events: MomentEvent[] = [];
   e.on((ev) => events.push(ev));
   let chargeT = -1;
