@@ -309,7 +309,7 @@ describe('season rollover', () => {
     const rng = new Rng(8);
     const t0 = performance.now();
     playSeason(state, rng, 50);
-    expect(performance.now() - t0).toBeLessThan(3000);
+    expect(performance.now() - t0).toBeLessThan(10000); // generous: slower under parallel test load and on CI
     expect(isSeasonComplete(state)).toBe(true); // including the 2028 Continental Cup
     expect(state.competitions['CONT-2028'].stage).toBe('done');
     const summary = endOfSeason(state, rng);

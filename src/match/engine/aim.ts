@@ -16,6 +16,7 @@ import { atDistance, curledPass, groundPass, launched, predictPath, solveLob, sp
 import { interceptFor, ledPass } from './ai';
 import { deliverCross, inBoxArea, inCrossZone, type CrossStyle } from './cross';
 import { runTimeFor } from './locomotion';
+import { runPath, runnerState } from './runs';
 
 /** Discrete heights of the loft toggle (Yerden / Yarım / Havadan). */
 export const AIM_LOFTS = [0, 0.3, 0.6] as const;
@@ -52,6 +53,8 @@ export interface AimAnalysis {
   interceptIds: string[];
   /** The pass assist turned it into a cross (whipped / driven / floated / cut-back). */
   cross?: CrossStyle | null;
+  /** The pass assist snapped it into a runner's path (a ball in behind / into his run). */
+  through?: boolean;
 }
 
 const asEngine = (m: MomentEngine): Engine | null => (m instanceof Engine ? m : null);
@@ -162,12 +165,48 @@ function pickReceiver(e: Engine, raw: KickParams, path: Vec3[], drawnEnd: Vec2 |
     const dist = hyp(at.x - b.x, at.y - b.y);
     if (dist < 3) continue;
     if (drawnEnd) {
-      let dEnd = hyp(at.x - drawnEnd.x, at.y - drawnEnd.y);
+      // (the stroke ends where his run takes him, or near where the user sees him now)
+      let dEnd = Math.min(hyp(at.x - drawnEnd.x, at.y - drawnEnd.y), hyp(m.st.pos.x - drawnEnd.x, m.st.pos.y - drawnEnd.y) + 1);
       let pt = at;
       let through = false;
-      // a runner: the drawn end further along his run = a ball into the space ahead of him
+      // a runner in behind (or one on the shoulder about to go): the drawn end on / near his
+      // projected run = the ball into his path, weighted so he runs onto it
+      const rst = runnerState(m);
+      const dirU = e.user.dir;
+      // (one still waiting on the shoulder: only for a ball clearly in behind the line)
+      if (rst && (rst === 'live' || drawnEnd.x * dirU > e.offsideX(e.user.side) * dirU + 1)) {
+        const pts = runPath(e, m, 2.2, 0.1);
+        let bi = -1;
+        let bd = Infinity;
+        for (let k = 2; k < pts.length; k++) {
+          const dq = hyp(pts[k].x - drawnEnd.x, pts[k].y - drawnEnd.y);
+          if (dq < bd) { bd = dq; bi = k; }
+        }
+        if (bi >= 2) {
+          // (weighted so he runs onto it: on along his run to where a ball dying into the space
+          // gets there no later than he does — never one he has to wait for)
+          const late = (k: number) => 0.15 + hyp(pts[k].x - b.x, pts[k].y - b.y) / 14 > (k + 1) * 0.1 + 0.25;
+          while (bi < pts.length - 1 && late(bi)) bi++;
+          let q = pts[bi];
+          // drawn on beyond the projection: further along the same line (up to ~18 m from him)
+          if (bi === pts.length - 1) {
+            const p0 = pts[bi - 1];
+            const ux = q.x - p0.x;
+            const uy = q.y - p0.y;
+            const ul = hyp(ux, uy) || 1;
+            const ext = clamp(((drawnEnd.x - q.x) * ux + (drawnEnd.y - q.y) * uy) / ul, 0, Math.max(0, 18 - hyp(q.x - m.st.pos.x, q.y - m.st.pos.y)));
+            q = { x: q.x + (ux / ul) * ext, y: q.y + (uy / ul) * ext };
+          }
+          // (judged by how near the stroke ends to his run; the ball goes to the timed point)
+          const dq = Math.min(bd, hyp(q.x - drawnEnd.x, q.y - drawnEnd.y));
+          // (well ahead of where he is now: into his path, not to his feet)
+          const ahead = hyp(q.x - m.st.pos.x, q.y - m.st.pos.y) > 3;
+          q = { x: clamp(q.x, -HL + 1, HL - 1.5), y: clamp(q.y, -HW + 1, HW - 1) };
+          if (ahead && (q.x - b.x) * dirU > 2 && dq + 1 < dEnd) { dEnd = dq + 1; pt = q; through = true; }
+        }
+      }
       const sp = hyp(m.st.vel.x, m.st.vel.y);
-      if (sp > 2.2 && !lofted) {
+      if (!through && sp > 2.2 && !lofted) {
         const ux = m.st.vel.x / sp;
         const uy = m.st.vel.y / sp;
         const proj = (drawnEnd.x - m.st.pos.x) * ux + (drawnEnd.y - m.st.pos.y) * uy;
@@ -176,11 +215,14 @@ function pickReceiver(e: Engine, raw: KickParams, path: Vec3[], drawnEnd: Vec2 |
           const l = Math.min(proj, 16);
           const q = { x: clamp(m.st.pos.x + ux * l, -HL + 1, HL - 1.5), y: clamp(m.st.pos.y + uy * l, -HW + 1, HW - 1) };
           const dq = hyp(q.x - drawnEnd.x, q.y - drawnEnd.y);
-          // (a clear through ball only: his feet / stride stay the default)
-          if (dq + 1.5 < dEnd) { dEnd = dq + 1.5; pt = q; through = true; }
+          // (a clear through ball only — forward, into space: his feet / stride stay the default)
+          if (dq + 1.5 < dEnd && (q.x - b.x) * e.user.dir > 2) { dEnd = dq + 1.5; pt = q; through = true; }
         }
       }
       const tol = 3.2 + dist * 0.1;
+      // (a man already bursting in behind, played into his stride well ahead of him: that is a
+      // ball into his run too)
+      if (!through && rst === 'live' && hyp(pt.x - m.st.pos.x, pt.y - m.st.pos.y) > 3 && (pt.x - b.x) * dirU > 2) through = true;
       if (dEnd < tol && dEnd < bestScore) { bestScore = dEnd; best = { m, at: pt, through }; }
       continue;
     }
@@ -272,6 +314,7 @@ export function analyzeAim(engine: MomentEngine, raw: KickParams, opts: AimOptio
   const kind = e.owner === e.user ? 'ground' : e.reach(e.user).kind;
   let receiver: Agent | null = null;
   let snapped = false;
+  let through = false;
   let crossStyle: CrossStyle | null = null;
   const cross = goalCrossing(path);
   const atGoal = !!cross && Math.abs(cross.y) < GW + 2 && cross.z < GH + 1;
@@ -312,6 +355,7 @@ export function analyzeAim(engine: MomentEngine, raw: KickParams, opts: AimOptio
       path = e.predictKick(params, maxTime);
       receiver = pick.m;
       snapped = true;
+      through = pick.through;
     }
   }
   if (!snapped && drawn && !atGoal && (opts.assist ?? true) && kind !== 'header' && e.setPiece === null) {
@@ -359,5 +403,6 @@ export function analyzeAim(engine: MomentEngine, raw: KickParams, opts: AimOptio
     snapped,
     interceptIds: interceptors(e, path, shot, until),
     cross: crossStyle,
+    through,
   };
 }

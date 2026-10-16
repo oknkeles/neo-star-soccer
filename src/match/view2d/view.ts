@@ -4,7 +4,7 @@
  * outcome beat, a simple replay and touch controls. Same contract as the 3D mountMomentView.
  */
 import type { CameraMode, MomentEvent, MomentOutcome, MomentSetup, ReplayFrame, Vec2, Vec3 } from '../../core/types';
-import { supportInfo, type MomentEngine, type SupportCue } from '../engine/api';
+import { runnerCues, supportInfo, type MomentEngine, type RunnerCue, type SupportCue } from '../engine/api';
 import type { MomentViewHandle, MomentViewOptions } from '../view/api';
 import { audio } from '../../audio/api';
 import { t } from '../../core/i18n';
@@ -13,7 +13,7 @@ import { Controls, controlMode, controlRows, keyLabel } from '../controls/contro
 import { mountTouchControls, type TouchUi } from '../controls/touch';
 import { mountAimPanel, surname } from '../controls/aimPanel';
 import {
-  ACCENT, GW, HL, HW, drawAimMarks, drawBall, sx, sy, drawBanner, drawSupport, drawFlash, drawGoals, drawHint, drawLabel, drawMinimap,
+  ACCENT, GW, HL, HW, drawAimMarks, drawBall, sx, sy, drawBanner, drawRunCues, drawSupport, drawFlash, drawGoals, drawHint, drawLabel, drawMinimap,
   drawOffscreenArrow, drawPath, drawPitch, drawPlayers, drawPowerBar, drawTarget, drawTimeBar, spawnConfetti,
   stepConfetti, teamLooks, drawStartPrompt, drawStaminaBar, type Cam, type Confetto, type PlayerMeta, type Snap,
 } from './render';
@@ -410,6 +410,10 @@ export function mountMomentView2DImpl(container: HTMLElement, engine: MomentEngi
     }
     const cueDraw = cue ? { open: hasBall || calm ? cue.open : [], covered: hasBall || calm ? cue.covered : [], oneTwo: calm ? null : cue.oneTwo, label: t('view.hud.oneTwo') } : null;
     drawSupport(ctx, cam, snap, cueDraw, clock, 'rings');
+    // calm mode: the runners' projected runs (draw the ball onto one and he runs onto it)
+    let runs: RunnerCue[] = [];
+    if (calm && live) { try { runs = runnerCues(engine); } catch { runs = []; } }
+    drawRunCues(ctx, cam, runs, clock);
     drawPlayers(ctx, cam, snap, metas, clock, { highlightId: live && hasBall && !calm ? ov.pass?.id ?? null : null, highlightKey: ov.touch ? t('v2d.touch.pass') : 'F' });
     drawSupport(ctx, cam, snap, cueDraw, clock, 'hint');
     drawBall(ctx, cam, snap.ball, trail, roll);

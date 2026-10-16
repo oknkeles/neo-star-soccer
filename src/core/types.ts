@@ -801,7 +801,7 @@ export type ControlCommand =
   | { kind: 'sprint'; on: boolean }
   | { kind: 'aimStart'; freeze?: boolean }          // user started a kick gesture (engine may slow time; freeze = stop time completely until kick / aimCancel)
   | { kind: 'aimCancel' }
-  | { kind: 'kick'; params: KickParams }
+  | { kind: 'kick'; params: KickParams; to?: string | null; through?: boolean }   // to: the team-mate a pass is meant for (calm pass assist); through: a ball in behind / into a run (R, or a stroke snapped onto a run)
   | { kind: 'aftertouch'; spin: number }            // -1..1 extra curl shortly after the kick
   | { kind: 'callForBall'; through: boolean }
   | { kind: 'tackle'; slide: boolean }

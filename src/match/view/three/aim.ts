@@ -4,7 +4,7 @@
  * Plus the user's glowing ring.
  */
 import * as THREE from 'three';
-import type { Vec3 } from '../../../core/types';
+import type { Vec2, Vec3 } from '../../../core/types';
 
 export interface AimView {
   group: THREE.Group;
@@ -230,5 +230,71 @@ export function buildSupportRings(max = 10): SupportRings {
       }
     },
     dispose() { openTex.dispose(); coverTex.dispose(); openMat.dispose(); coverMat.dispose(); geo.dispose(); },
+  };
+}
+
+export interface RunCues {
+  group: THREE.Group;
+  /** Calm mode: each runner's projected run (pitch frame) as a dotted ground line with an arrowhead. */
+  update(time: number, cues: readonly { pts: readonly Vec2[]; live: boolean }[]): void;
+  dispose(): void;
+}
+
+export function buildRunCues(max = 5, dots = 15): RunCues {
+  const group = new THREE.Group();
+  group.name = 'runCues';
+  // a row of small ground dots along each projected run (a thin line is lost on the grass), and an
+  // arrowhead where it ends; brighter for a runner already going
+  const dotGeo = new THREE.CircleGeometry(0.14, 12);
+  dotGeo.rotateX(-Math.PI / 2);
+  const headGeo = new THREE.BufferGeometry();
+  headGeo.setAttribute('position', new THREE.Float32BufferAttribute([0.7, 0, 0, -0.35, 0, 0.4, -0.35, 0, -0.4], 3));
+  const liveMat = new THREE.MeshBasicMaterial({ color: 0xeafff0, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide });
+  const readyMat = new THREE.MeshBasicMaterial({ color: 0xeafff0, transparent: true, opacity: 0.42, depthWrite: false, side: THREE.DoubleSide });
+  const runs: { dots: THREE.Mesh[]; head: THREE.Mesh }[] = [];
+  for (let i = 0; i < max; i++) {
+    const ds: THREE.Mesh[] = [];
+    for (let k = 0; k < dots; k++) {
+      const d = new THREE.Mesh(dotGeo, liveMat);
+      d.renderOrder = 3;
+      d.visible = false;
+      group.add(d);
+      ds.push(d);
+    }
+    const head = new THREE.Mesh(headGeo, liveMat);
+    head.renderOrder = 3;
+    head.visible = false;
+    group.add(head);
+    runs.push({ dots: ds, head });
+  }
+  return {
+    group,
+    update(time, cues) {
+      liveMat.opacity = 0.72 + 0.16 * Math.sin(time * 4);
+      for (let i = 0; i < max; i++) {
+        const r = runs[i];
+        const c = cues[i];
+        const n = c ? c.pts.length : 0;
+        for (let k = 0; k < dots; k++) {
+          const d = r.dots[k];
+          // (every point but the last, which carries the arrowhead)
+          const p = c && k < n - 1 ? c.pts[k] : null;
+          d.visible = !!p;
+          if (!p || !c) continue;
+          d.material = c.live ? liveMat : readyMat;
+          d.position.set(p.x, 0.04, -p.y);
+        }
+        if (!c || n < 2) { r.head.visible = false; continue; }
+        const p = c.pts[n - 1];
+        const q = c.pts[n - 2];
+        r.head.visible = true;
+        r.head.material = c.live ? liveMat : readyMat;
+        r.head.position.set(p.x, 0.045, -p.y);
+        r.head.rotation.set(0, Math.atan2(p.y - q.y, p.x - q.x), 0);
+      }
+    },
+    dispose() {
+      dotGeo.dispose(); headGeo.dispose(); liveMat.dispose(); readyMat.dispose();
+    },
   };
 }

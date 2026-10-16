@@ -10,9 +10,10 @@ import type { Engine } from './engine';
 import { slotHome } from './formation';
 import { baseXg, distToGoal, hyp, inBox, segDist } from './geom';
 import type { Agent, KickRec, PathSample, Side, SupRole } from './internal';
-import { atDistance, groundPass, launched, predictPath, solveLob, solveShot } from './solver';
-import { runDistance, runTimeFor } from './locomotion';
+import { atDistance, curledPass, groundPass, launched, predictPath, solveLob, solveShot } from './solver';
+import { angDiff, runDistance, runTimeFor } from './locomotion';
 import { attackRun, boxPlan, deliverCross, inCrossZone, loadRun, type BoxRole, type CrossPlan } from './cross';
+import { timedRuns, type RunSpot } from './runs';
 
 // ───────────────────────── interception estimates ─────────────────────────
 
@@ -267,6 +268,13 @@ function playToUser(e: Engine, a: Agent): 'passed' | 'wait' | 'no' {
   // a one-two is on when he passed and set off (forward / into space)
   const running = sp > 2.2 && fwd > -0.3 * sp && steering;
   if (!calling && !(fromUser && running)) return 'no';
+  // (played in behind, clean through on goal: he goes himself — the user asked for nothing)
+  if (!calling && clearThrough(e, a) && baseXg(u.st.pos, u.dir) < baseXg(a.st.pos, a.dir) + 0.15) return 'no';
+  // (taken in his stride from the user's ball in behind: he drives on with it first — square /
+  // cut it back once he has committed the defence, at once only to a user clearly better placed)
+  const k = e.lastKick;
+  const inBehind = !!k && k.through && k.user && k.target === a.i;
+  if (!calling && inBehind && a.carryT < 0.9 && baseXg(u.st.pos, u.dir) < baseXg(a.st.pos, a.dir) + 0.12) return 'no';
   const b = s.ball.pos;
   const dist = hyp(u.st.pos.x - b.x, u.st.pos.y - b.y);
   if (dist < 3.5 || dist > 42) return 'no';
@@ -280,9 +288,17 @@ function playToUser(e: Engine, a: Agent): 'passed' | 'wait' | 'no' {
   const thr = PASS_THR(e);
   let pick: LedPass | null = lp.margin > thr ? lp : null;
   // over a blocked lane: a lofted ball (an expensive solve, so only once waiting is over)
-  if (!pick && dist > 13 && (!canWait || waited > 0.45)) {
+  if (!pick && dist > 13 && (!canWait || waited > 0.45 || lp.margin < thr - 0.25)) {
     const lob = ledPass(e, a, u, { feet, maxLead: 9, lofted: true });
     if (lob.margin > thr + 0.1) pick = lob;
+  }
+  // a man standing in the lane: bent round him with the inside of the foot (passing skill)
+  let bent: KickParams | null = null;
+  if (!pick && dist > 9 && dist < 32) bent = bentAround(e, a, u, pick ?? lp, thr + 0.05);
+  if (!pick && bent) {
+    const bp = bent;
+    e.windUp(a, 'pass', () => e.execKick(a, bp, { target: u.i, isShot: false }), 0);
+    return 'passed';
   }
   if (pick) {
     // wind up and strike; the lead is re-solved at contact (he has kept running meanwhile)
@@ -297,6 +313,67 @@ function playToUser(e: Engine, a: Agent): 'passed' | 'wait' | 'no' {
   }
   // the lane is shut: hold it a beat if he is about to come free, else keep the ball
   return canWait && lp.margin > thr - 0.8 ? 'wait' : 'no';
+}
+
+/**
+ * The user's pass: the team-mate who gets to it first (earliest intercept with his momentum,
+ * onside — the one it was aimed at keeps it when he is about as quick) is its receiver, and a ball
+ * he has to run onto (in behind / into the space ahead of him) is a through ball he takes in stride.
+ */
+export function claimPass(e: Engine, rec: KickRec, intended = false): void {
+  const path = e.ballPath();
+  if (path.length < 2) return;
+  let best: Agent | null = null;
+  let bt = Infinity;
+  let bp: Vec2 | null = null;
+  for (const m of e.agents) {
+    if (m.side !== rec.side || m.isUser || m.isGK || m.passive || m.stun > 0.3 || rec.offside.includes(m.i)) continue;
+    const r = interceptFor(e, m, path, 1.2, true);
+    if (r.t < bt) { bt = r.t; best = m; bp = r.p; }
+  }
+  if (!best || !bp || !Number.isFinite(bt)) return;
+  const g = rec.target >= 0 ? e.agents[rec.target] : null;
+  // (an ordinary pass keeps the man it was played to — only a ball in behind or one the user aimed
+  // at a man is claimed here)
+  if (!intended && !rec.through && !(bp.x * rec.dir > e.offsideX(rec.side) * rec.dir + 0.5)) return;
+  if (g && g !== best && !g.isUser && g.side === rec.side && !rec.offside.includes(g.i)) {
+    // (a man the user aimed it at — the calm pass assist — keeps it whenever he can get there)
+    const r = interceptFor(e, g, path, 1.2, true);
+    if (r.t < bt + 0.25 || (intended && Number.isFinite(r.t))) { best = g; bt = r.t; bp = r.p; }
+  }
+  if (g && g.isUser) return;
+  rec.target = best.i;
+  // a ball in behind (the user's R / a stroke snapped into a run, or one played beyond the line):
+  // he takes it in his stride
+  const dir = rec.dir;
+  if (bp.x * dir > e.offsideX(rec.side) * dir + 0.5) rec.through = true;
+  // a ball into his run is read as it is struck: off after it at once, in his stride (the
+  // coordinator takes over at its next beat; a pass to feet is left to it — he sets himself)
+  if (!rec.through) return;
+  const sm = strideMeet(e, best);
+  best.target = sm ? sm.p : { x: bp.x, y: bp.y };
+  best.urgency = sm ? Math.max(sm.urg, 0.9) : 1;
+  best.duty = 'receive';
+}
+
+/** Clean through: within ~32 m of goal and no outfield opponent between him and it (a cone toward goal). */
+export function clearThrough(e: Engine, a: Agent): boolean {
+  const pos = a.st.pos;
+  const dir = a.dir;
+  if (distToGoal(pos, dir) > 32) return false;
+  const gx = dir * HL - pos.x;
+  const gy = -pos.y;
+  const gl = hyp(gx, gy) || 1;
+  for (const o of e.agents) {
+    if (o.side === a.side || o.isGK || o.passive) continue;
+    const rx = o.st.pos.x - pos.x;
+    const ry = o.st.pos.y - pos.y;
+    const along = (rx * gx + ry * gy) / gl;
+    if (along < -0.5 || along > gl) continue;
+    const lat = Math.abs(rx * gy - ry * gx) / gl;
+    if (lat < 1.4 + 0.3 * Math.max(0, along)) return false;
+  }
+  return true;
 }
 
 // ───────────────────────── coordinator ─────────────────────────
@@ -336,6 +413,11 @@ export function aiUpdate(e: Engine): void {
     }
   }
   const passIn = loose && k && !k.isShot && !k.completed && k.target >= 0 && s.time - k.t < 4 ? k : null;
+  if (passIn && !passIn.oppTouched) {
+    // the pass is his: the team-mate it is meant for goes for it, nobody doubles up on him
+    const r = e.agents[passIn.target];
+    if (r && !r.isUser && !r.isGK && r.side === passIn.side && Number.isFinite(r.eit) && r.eit < 6 && r.stun <= 0) chaser[r.side] = r;
+  }
   // crosses: box runs — loaded while a team-mate is wide in the final third, attacking the
   // flight once the cross is struck (near post, far post, penalty spot)
   let runs: Map<number, BoxRole> | null = null;
@@ -354,6 +436,12 @@ export function aiUpdate(e: Engine): void {
   // the user's team: everyone re-shapes around the (next) ball carrier
   const focus = supportFocus(e, passIn);
   const plan = focus ? planSupport(e, focus.c, focus.p) : null;
+  // the other side's runners time their runs off their own carrier
+  let oppPlan: Map<number, RunSpot> | null = null;
+  if (owner && !owner.isGK && owner.side !== e.user.side && !e.frozen) {
+    const ms = e.agents.filter((m) => m.side === owner.side && m !== owner && !m.isGK && !m.passive && !m.wall);
+    oppPlan = timedRuns(e, owner, owner.st.pos, ms);
+  }
 
   for (const a of e.agents) {
     if (a.isGK || a.isUser || a.passive) continue;
@@ -374,10 +462,13 @@ export function aiUpdate(e: Engine): void {
       continue;
     }
     if (loose) {
-      if (passIn && passIn.side === a.side && passIn.target === a.i && passIn.through) {
+      // (a ball into his path, or one to a man already bursting in behind: met in his stride)
+      const bursting = !!a.run && (a.run.phase === 'go' || a.run.phase === 'bend') && hyp(a.st.vel.x, a.st.vel.y) > 4;
+      const inStride = !!passIn && passIn.target === a.i && (passIn.through || bursting);
+      if (passIn && passIn.side === a.side && passIn.target === a.i && inStride) {
         // a ball in behind: he keeps sprinting and takes it in his stride
-        const m = strideMeet(e, a);
-        if (m) goTo(a, m, 1, 'receive');
+        const m = strideMeet(e, a, a.side === 'us' ? best.them : best.us);
+        if (m) goTo(a, m.p, m.urg, 'receive');
         else if (a.eitPoint) goTo(a, a.eitPoint, 1, 'receive');
       } else if (passIn && passIn.side === a.side && passIn.target === a.i && a.eitPoint && a.eit < 6) {
         // the ball comes to him: step across onto its line and set himself (a firm pass met with a
@@ -396,12 +487,12 @@ export function aiUpdate(e: Engine): void {
       } else if (k && k.cross && k.side === a.side && s.time - k.t < 3.5) {
         attackCross(e, a);
       } else if ((passIn && passIn.side === a.side) || (!passIn && s.ball.lastTouchSide === a.side)) {
-        attackOffBall(e, a, plan);
+        attackOffBall(e, a, a.side === e.user.side ? plan : oppPlan);
       } else {
         defendOffBall(e, a, null, marks);
       }
     } else if (owner && owner.side === a.side) {
-      attackOffBall(e, a, plan);
+      attackOffBall(e, a, a.side === e.user.side ? plan : oppPlan);
     } else {
       defendOffBall(e, a, pressers, marks);
     }
@@ -481,7 +572,7 @@ function homeOf(e: Engine, a: Agent, inPossession: boolean): Vec2 {
 
 const isForward = (a: Agent) => a.slot.role === 'ST' || a.slot.role === 'W' || a.slot.role === 'AM';
 
-function attackOffBall(e: Engine, a: Agent, plan: Map<number, SupPlan> | null): void {
+function attackOffBall(e: Engine, a: Agent, plan: Map<number, SupPlan | RunSpot> | null): void {
   const sp = plan?.get(a.i);
   if (sp) {
     a.target = { x: clamp(sp.x, -HL + 2, HL - 1), y: clamp(sp.y, -HW + 1.5, HW - 1.5) };
@@ -505,15 +596,6 @@ function attackOffBall(e: Engine, a: Agent, plan: Map<number, SupPlan> | null): 
     a.duty = 'run';
   } else {
     a.duty = 'support';
-    // forwards time runs in behind when the carrier can play them in
-    if (owner && owner.side === a.side && isForward(a) && !owner.isGK) {
-      const u = a.st.pos.x * dir;
-      const ownerU = owner.st.pos.x * dir;
-      if (u < line - 0.4 && ownerU > -25 && line < HL - 12 && e.rng.chance(0.035 + (owner.isUser ? 0.035 * e.ease : 0))) {
-        a.runT = 2.4;
-        a.runTarget = { x: dir * Math.min(line + 10, HL - 8), y: clamp(a.st.pos.y * 0.75 + e.rng.float(-4, 4), -22, 22) };
-      }
-    }
     // casual play: midfielders / full-backs show for the user's pass (an angled option either side)
     if (owner && owner.isUser && e.ease > 0 && !isForward(a) && a.slot.role !== 'CB') {
       const side = Math.sign(a.st.pos.y - owner.st.pos.y) || (a.i % 2 ? 1 : -1);
@@ -573,18 +655,6 @@ function supportFocus(e: Engine, passIn: KickRec | null): { c: Agent; p: Vec2 } 
   return null;
 }
 
-/** Is the carrier ready to play a forward runner in (on the ball, facing up, not hounded)? */
-function passerReady(e: Engine, c: Agent): boolean {
-  if (e.owner !== c || c.isGK) return false;
-  if (e.pressureOn(c) > 0.7) return false;
-  if (c.isUser) {
-    const v = c.st.vel;
-    const sp = hyp(v.x, v.y);
-    return sp < 1 || v.x * c.dir > -0.2 * sp;
-  }
-  return Math.cos(c.st.facing) * c.dir > -0.2;
-}
-
 /**
  * Support around the ball carrier: two short options at an angle either side (10–18 m), a deeper
  * safe option, forwards on the shoulder of the last defender timing runs (held / curved to stay
@@ -601,6 +671,8 @@ function planSupport(e: Engine, c: Agent, p: Vec2): Map<number, SupPlan> {
   const mates: Agent[] = [];
   for (const m of e.agents) if (m.side === side && m !== c && !m.isGK && !m.isUser && !m.passive && !m.wall) mates.push(m);
   if (!mates.length) return out;
+  // runs in behind (the forwards on the last line, the third man from deep): timed by runs.ts
+  const runs = timedRuns(e, c, p, mates);
   const sy = Math.sign(p.y) || 1;
   // positional roles by slot (midfielders: short options and the one behind; wingers: width or
   // runs; full-backs: width / overlap / the switch; centre-backs: rest defence), each on his own
@@ -626,29 +698,18 @@ function planSupport(e: Engine, c: Agent, p: Vec2): Map<number, SupPlan> {
     let best: Agent | null = null;
     let bc = Infinity;
     for (const m of mids) {
-      if (roleOf.has(m)) continue;
+      if (roleOf.has(m) || runs.get(m.i)?.duty === 'run') continue;
       const cost = hyp(p.x + off.x - m.st.pos.x, p.y + off.y - m.st.pos.y) + (laneOf(m) === -sg ? 8 : 0) - keep(m, sg > 0 ? 'shortA' : 'shortB') + (m.runT > 0 ? 10 : 0);
       if (cost < bc) { bc = cost; best = m; }
     }
     if (best) roleOf.set(best, { r: sg > 0 ? 'shortA' : 'shortB', off });
   }
-  const ready = passerReady(e, c);
-  let running = 0;
-  for (const m of mates) if (m.runT > 0) running++;
-  // a forward times a run in behind only when the passer can play it (and stays onside until then)
-  const tryRun = (m: Agent, chance: number, ty: number): boolean => {
-    if (m.runT > 0 || !ready || running >= 2 || line >= HL - 10 || line - pu >= 36 || pu <= -32 || !e.rng.chance(chance)) return false;
-    m.runT = 2.6;
-    m.runTarget = { x: dir * Math.min(line + 10, HL - 8), y: clamp(m.st.pos.y * 0.7 + (ty - m.st.pos.y) * 0.3, -22, 22) };
-    running++;
-    return true;
-  };
-  const runChance = 0.05 + (c.isUser ? 0.06 * (0.5 + e.ease) : 0.02);
   const deepOff = { x: -dir * 12, y: -sy * 4 };
   const wantDeep = pu > -HL + 19;
   let deepTaken = false;
   for (const m of mids.sort((x, y) => hyp(x.st.pos.x - p.x, x.st.pos.y - p.y) - hyp(y.st.pos.x - p.x, y.st.pos.y - p.y))) {
     if (roleOf.has(m)) continue;
+    if (runs.get(m.i)?.duty === 'run') { roleOf.set(m, { r: 'run', off: null }); continue; }
     if (wantDeep && !deepTaken && m.slot.role !== 'AM') { roleOf.set(m, { r: 'deep', off: deepOff }); deepTaken = true; }
     else roleOf.set(m, { r: 'shape', off: null });
   }
@@ -658,8 +719,8 @@ function planSupport(e: Engine, c: Agent, p: Vec2): Map<number, SupPlan> {
     const sg = laneOf(m);
     if (role === 'ST') { roleOf.set(m, { r: 'run', off: null }); continue; }
     if (role === 'W') {
-      // the winger attacks the space behind the full-back now and then (inside-to-out runs)
-      if (m.runT > 0 || tryRun(m, runChance * 0.6, sg * clamp(Math.abs(p.y) + 6, 10, 22))) { roleOf.set(m, { r: 'run', off: null }); continue; }
+      // high on the last line, timing runs into the channels (runs.ts)
+      if (runs.has(m.i)) { roleOf.set(m, { r: 'run', off: null }); continue; }
       // his wing: the in-possession shape, ahead of the ball, down the line when the ball is out there
       const onWing = Math.sign(p.y) === sg && Math.abs(p.y) > 18;
       const home = homeOf(e, m, true);
@@ -713,26 +774,18 @@ function planSupport(e: Engine, c: Agent, p: Vec2): Map<number, SupPlan> {
     let laneW = 1;
     let urg = 0.7;
     let duty: Agent['duty'] = 'support';
+    const rs = runs.get(m.i);
+    if (r === 'run' && rs) {
+      // bursting / bending along the line / dropping back onside: his run, as timed
+      out.set(m.i, { x: rs.x, y: rs.y, urg: rs.urg, duty: rs.duty });
+      taken.push({ x: rs.x, y: rs.y });
+      continue;
+    }
     if (r === 'run') {
       const home = homeOf(e, m, true);
       const ty = m.slot.role === 'ST' ? clamp(p.y * 0.35, -9, 9) : (Math.sign(home.y) || (m.i % 2 ? 1 : -1)) * clamp(Math.abs(home.y), 14, HW - 6);
       // the striker on the shoulder of the last defender, wide men a step off it in their channel
       const tu = Math.min(line - (m.slot.role === 'ST' ? 1.5 : 3), Math.max(home.x * dir, pu + 5), pu + (m.slot.role === 'ST' ? 20 : 30));
-      tryRun(m, runChance, ty);
-      if (m.runT > 0 && m.runTarget) {
-        let tx = m.runTarget.x;
-        let ty2 = m.runTarget.y;
-        let u = 0.97;
-        // the ball has not been played yet: curve along the line instead of straying offside
-        if (e.owner === c && tx * dir > line - 0.5) {
-          const ahead = m.st.pos.x * dir > line - 1.6;
-          tx = dir * (line - 0.5);
-          if (ahead) { ty2 = m.runTarget.y; u = 0.85; }
-        }
-        out.set(m.i, { x: tx, y: ty2, urg: u, duty: 'run' });
-        taken.push({ x: tx, y: ty2 });
-        continue;
-      }
       nominal = { x: dir * tu, y: ty };
       dMin = 6; dMax = 40; laneW = 0.5; urg = 0.75;
     } else if (r === 'overlap') {
@@ -869,6 +922,7 @@ function coverFor(e: Engine, pressers: Agent[]): Agent | null {
 
 function defendOffBall(e: Engine, a: Agent, pressers: Agent[] | null, marks: Map<number, Agent>): void {
   const s = e.state;
+  a.run = null;
   const c = e.owner;
   const ownGoal = { x: -a.dir * HL, y: 0 };
   if (c && pressers && pressers.includes(a)) {
@@ -878,9 +932,24 @@ function defendOffBall(e: Engine, a: Agent, pressers: Agent[] | null, marks: Map
     const d = hyp(c.st.pos.x - a.st.pos.x, c.st.pos.y - a.st.pos.y);
     const solo = c.isUser && a.side !== c.side ? e.longCarry : 0;
     const first = pressers[0] === a;
-    // (double team: the second man closes in on the side the carrier is heading for)
-    const close = first ? 0.9 : 3.5 - 2.0 * solo;
+    // sold by a feint: he leans the wrong way for a beat (no tackle meanwhile)
+    if (a.sold && s.time < a.sold.until) { goTo(a, a.sold.lean, 0.9, 'press'); return; }
+    a.sold = null;
+    // the first man jockeys an AI carrier running at him: a step off, goal-side, showing him wide
+    // (onto the outside) instead of diving in; tight when the carrier stands, turns away or shields
+    const cv = c.st.vel;
+    const csp = hyp(cv.x, cv.y);
+    const rx = a.st.pos.x - c.st.pos.x;
+    const ry = a.st.pos.y - c.st.pos.y;
+    const rl = hyp(rx, ry) || 1;
+    // (the carrier facing him with it under control, or running at him)
+    const facingHim = (Math.cos(c.st.facing) * rx + Math.sin(c.st.facing) * ry) / rl > 0.5 && (csp > 1 || !!c.takeOn);
+    // (against the user the pressing keeps its tuned casual model: the difficulty is set on it)
+    const at = !c.isUser && (facingHim || (csp > 2.5 && (cv.x * gx + cv.y * gy) / (csp * gl) > 0.45));
+    // (jockeying: he keeps the gap he has, giving ground as the carrier comes on, closing it slowly)
+    const close = first ? (at ? clamp(d - 0.35, 1.5, 3) : 0.9) : 3.5 - 2.0 * solo;
     let target = { x: c.st.pos.x + (gx / gl) * close, y: c.st.pos.y + (gy / gl) * close };
+    if (first && at && Math.abs(c.st.pos.y) > 5) target.y -= Math.sign(c.st.pos.y) * 0.6;
     if (!first && solo > 0) {
       const vl = hyp(c.st.vel.x, c.st.vel.y);
       if (vl > 1) target = { x: target.x + (c.st.vel.x / vl) * 2.2 * solo, y: target.y + (c.st.vel.y / vl) * 2.2 * solo };
@@ -892,6 +961,7 @@ function defendOffBall(e: Engine, a: Agent, pressers: Agent[] | null, marks: Map
     if (d > 8) urg = a.side === 'them' ? 1 - (c.isUser ? 0.22 : 0.12) * e.ease * (1 - solo) : 1;
     // start grace: they don't fly into him in the first beat
     if (c.isUser && e.inGrace()) urg *= 0.6;
+
     goTo(a, target, urg, 'press');
     // tackle attempts (both men of a double team go for it)
     const bd = hyp(s.ball.pos.x - a.st.pos.x, s.ball.pos.y - a.st.pos.y);
@@ -899,6 +969,14 @@ function defendOffBall(e: Engine, a: Agent, pressers: Agent[] | null, marks: Map
       let rate = 0.12 + 0.18 * (a.a.tackling / 99);
       if (a.side === 'them') rate *= (0.75 + 0.6 * diff) * (1 - 0.25 * e.ease) * (c.isUser ? 1 - 0.25 * e.ease : 1);
       if (a.side === 'us' && e.attackSide === 'them') rate *= 0.45;
+      // (he waits for the touch: in when the ball is pushed toward him / off the carrier's feet, or
+      // the carrier has turned his back; not at a man with it under control)
+      // (only a man goal-side of an AI carrier: a chaser from behind, or anyone on the user, as before)
+      if (!c.isUser && (a.st.pos.x - c.st.pos.x) * c.dir > 0) {
+        const off = hyp(s.ball.pos.x - c.st.pos.x, s.ball.pos.y - c.st.pos.y);
+        const back = Math.cos(c.st.facing) * (a.st.pos.x - c.st.pos.x) + Math.sin(c.st.facing) * (a.st.pos.y - c.st.pos.y) < 0;
+        rate *= off > 0.62 && bd < off ? 1.4 : back ? 1.15 : 0.8;
+      }
       if (c.isGK) rate = 0;
       if (e.rng.chance(rate)) e.tryTackle(a, e.rng.chance(0.12));
     }
@@ -1051,22 +1129,66 @@ export function passParams(e: Engine, a: Agent, opt: PassOption): KickParams {
   return groundPass(e.env, k, b, opt.at, arrive);
 }
 
-/** Pick a shot target away from the keeper and solve it noise-free. */
+/**
+ * The AI's finish (noise-free solve; execution noise comes with the kick): placement or power by
+ * the situation — side-footed low into the far / open corner close in, driven from the edge of the
+ * box, bent into the far corner from distance, a chip when the keeper rushes out at him, headers
+ * down toward the corners. The corner: the side the keeper leaves open (usually the far post).
+ */
 export function shotParams(e: Engine, a: Agent, opts: { power?: number; curl?: number; zLow?: number; zHigh?: number; kind?: 'ground' | 'volley' | 'header' } = {}): KickParams {
   const b = e.state.ball.pos;
   const dir = a.dir;
   const gk = dir === 1 ? e.gkThem : e.gkUs;
-  const ky = gk ? gk.st.pos.y : 0;
-  const side = Math.abs(ky - (GW - 0.55)) > Math.abs(ky + (GW - 0.55)) ? 1 : -1;
-  const pick = e.rng.chance(0.75) ? side : -side;
-  const ty = pick * (GW - 0.5 - 0.3 * e.rng.next());
-  const tz = (opts.zLow ?? 0.3) + ((opts.zHigh ?? 1.8) - (opts.zLow ?? 0.3)) * e.rng.next();
-  const d = distToGoal({ x: b.x, y: b.y }, dir);
-  const power = opts.power ?? clamp(0.68 + d * 0.006, 0.6, 0.9);
-  const curl = opts.curl ?? (d > 17 ? 0.35 * Math.sign(ty - b.y || 1) * dir : 0);
   const kind = opts.kind ?? 'ground';
+  const d = distToGoal({ x: b.x, y: b.y }, dir);
+  const comp = clamp(a.a.composure, 1, 99) / 99;
+  const ky = gk ? gk.st.pos.y : 0;
+  const gkOff = gk ? HL - gk.st.pos.x * dir : 0;
+  const k = e.kicker(a);
+  // the keeper rushing out at him: a chip over him (composure)
+  if (kind === 'ground' && gk && !gk.isUser && gkOff > 4 && d > 7 && d < 24 && b.z < 0.4) {
+    const gd = hyp(gk.st.pos.x - b.x, gk.st.pos.y - b.y);
+    const rushing = (gk.st.vel.x * (b.x - gk.st.pos.x) + gk.st.vel.y * (b.y - gk.st.pos.y)) / (gd || 1) > 1.5;
+    if (gd < 10 && gd > 3 && (rushing || gkOff > 7) && e.rng.chance(0.3 + 0.5 * comp)) {
+      const ty = clamp(ky * -0.4 + (e.rng.next() - 0.5) * 1.6, -(GW - 1), GW - 1);
+      const power = clamp(0.3 + d * 0.014, 0.38, 0.78);
+      const spec = e.kickSpec(a, { dir: { x: dir, y: 0 }, power, loft: 0.5, curl: 0 }, 'ground', true);
+      return solveShot(e.env, k, spec, { x: b.x, y: b.y, z: b.z }, dir * HL, ty, 1.9, power, 0, 0.5).params;
+    }
+  }
+  // the corner: more of the goal either side of the keeper; across him (the far post) when it is close
+  const roomPlus = GW - 0.4 - ky;
+  const roomMinus = ky + GW - 0.4;
+  const far = -(Math.sign(b.y) || 1);
+  let pick = roomPlus > roomMinus ? 1 : -1;
+  if (Math.abs(roomPlus - roomMinus) < 0.9 && Math.abs(b.y) > 3) pick = far;
+  if (!e.rng.chance(0.68 + 0.25 * comp)) pick = -pick;
+  const ty = pick * (GW - 0.45 - 0.35 * e.rng.next());
+  let zLo = opts.zLow ?? 0.3;
+  let zHi = opts.zHigh ?? 1.8;
+  let power = opts.power ?? clamp(0.68 + d * 0.006, 0.6, 0.9);
+  let curl = opts.curl ?? (d > 17 ? 0.35 * Math.sign(ty - b.y || 1) * dir : 0);
+  if (kind === 'header' && opts.zHigh === undefined) { zLo = 0.1; zHi = 0.6; }
+  if (kind === 'ground' && opts.power === undefined) {
+    if (d < 13) {
+      // side-foot, low into the corner: placement over power (still firm enough to beat a dive)
+      power = clamp(0.74 + d * 0.006, 0.74, 0.84);
+      zLo = 0.15; zHi = 0.6;
+      curl = 0.06 * Math.sign(ty - b.y || 1) * dir;
+    } else if (d < 20) {
+      power = clamp(0.74 + (d - 13) * 0.012, 0.74, 0.86);
+      zLo = 0.25; zHi = 1.2;
+      curl = 0.15 * Math.sign(ty - b.y || 1) * dir;
+    } else {
+      // from distance: whipped into the far corner
+      power = clamp(0.84 + (d - 20) * 0.006, 0.84, 0.93);
+      zLo = 0.5; zHi = 1.9;
+      curl = 0.38 * Math.sign(ty - b.y || 1) * dir;
+    }
+  }
+  const tz = zLo + (zHi - zLo) * e.rng.next();
   const spec = e.kickSpec(a, { dir: { x: dir, y: 0 }, power, loft: 0.05, curl }, kind, true);
-  const sol = solveShot(e.env, e.kicker(a), spec, { x: b.x, y: b.y, z: b.z }, dir * HL, ty, tz, power, curl, kind === 'header' ? 0.3 : 0.06);
+  const sol = solveShot(e.env, k, spec, { x: b.x, y: b.y, z: b.z }, dir * HL, ty, tz, power, curl, kind === 'header' ? 0.3 : 0.06);
   return sol.params;
 }
 
@@ -1083,19 +1205,24 @@ export function throughBall(e: Engine, a: Agent, thr: number): { lp: LedPass; to
   // (space behind the line, the line ahead of the ball, the carrier facing up)
   if (line > HL - 9 || line < bu - 2 || Math.cos(a.st.facing) * dir < -0.3) return null;
   let best: { lp: LedPass; to: Agent; value: number; runDir: Vec2 } | null = null;
+  const trust = clamp(e.setup.teammateTrust, 0, 100) / 100;
   for (const m of e.agents) {
-    if (m.side !== a.side || m === a || m.isGK || m.passive || m.stun > 0 || m.isUser || m.wall) continue;
+    if (m.side !== a.side || m === a || m.isGK || m.passive || m.stun > 0 || m.wall) continue;
     const u = m.st.pos.x * dir;
-    // onside, on the shoulder of the last man (or just behind it, about to go)
-    if (u > line + 0.1 || u < line - 5 || u < bu - 6) continue;
-    const running = m.runT > 0 || m.duty === 'run';
+    // (the user: when he is making a run forward himself — he is played in first)
+    const userRun = m.isUser && !!e.ctl.dir && m.st.vel.x * dir > 3;
+    if (m.isUser && !userRun) continue;
+    const running = m.runT > 0 || m.duty === 'run' || userRun;
+    // onside, on the shoulder of the last man (or just behind it, about to go) — a man already
+    // bursting from deep can be found too: the ball is weighted into the space he is running into
+    if (u > line + 0.1 || u < line - (running && m.st.vel.x * dir > 3.5 ? 12 : 5) || u < bu - 6) continue;
     if (!running && !isForward(m)) continue;
     const d0 = hyp(m.st.pos.x - b.x, m.st.pos.y - b.y);
     if (d0 < 6 || d0 > 38) continue;
     // the ball stays short of the keeper's area: room to run onto it before he comes
     const maxLead = clamp(HL - 7 - u, 3, 11);
     // his run: toward his run target / straight through his channel, or a diagonal either way
-    const tg = m.runT > 0 && m.runTarget ? m.runTarget : { x: dir * Math.min(line + 12, HL - 7), y: clamp(m.st.pos.y * 0.8, -20, 20) };
+    const tg = !m.isUser && m.runT > 0 && m.runTarget ? m.runTarget : { x: dir * Math.min(line + 12, HL - 7), y: clamp(m.st.pos.y * 0.8, -20, 20) };
     const r0 = unitV(tg.x - m.st.pos.x, tg.y - m.st.pos.y);
     const base = r0.x * dir > 0.4 ? r0 : { x: dir, y: 0 };
     const inward = -Math.sign(m.st.pos.y) || 1;
@@ -1109,7 +1236,7 @@ export function throughBall(e: Engine, a: Agent, thr: number): { lp: LedPass; to
       const au = lp.at.x * dir;
       // in behind, short of the keeper's area, on the pitch, not a long chase, and his before anyone's
       if (au < line + 1.5 || au > HL - 5 || Math.abs(lp.at.y) > HW - 3 || lp.t > 2.4 || lp.margin < thr) continue;
-      const value = 0.45 + (au - bu) * 0.04 + baseXg(lp.at, dir) * 3 + Math.min(lp.margin, 1) * 0.3 + (running ? 0.15 : 0);
+      const value: number = 0.45 + (au - bu) * 0.04 + baseXg(lp.at, dir) * 3 + Math.min(lp.margin, 1) * 0.3 + (running ? 0.15 : 0) + (m.isUser ? 0.15 + trust * 0.5 : 0);
       if (!best || value > best.value) best = { lp, to: m, value, runDir };
     }
   }
@@ -1131,8 +1258,12 @@ export function carrierThink(e: Engine, a: Agent): void {
   if (mine) {
     const r = playToUser(e, a);
     if (r === 'passed') return;
-    if (r === 'wait') { shield(e, a); a.think = 0.08; return; }
+    if (r === 'wait') { openLane(e, a); a.think = 0.08; return; }
+    // (the user is calling for it: look up again soon — the lane may open any moment)
+    if (s.time < e.ctl.callUntil) a.think = 0.1;
   }
+  // (in the middle of a shimmy: he finishes it before anything else)
+  if (a.takeOn && s.time < a.takeOn.burst && takeOnStep(e, a, false)) return;
   const settle = a.carryT < 0.28 && pressure < 0.6 && dGoal > 14;
 
   // ── shoot? ──
@@ -1212,9 +1343,8 @@ export function carrierThink(e: Engine, a: Agent): void {
     const ry = o.st.pos.y - pos.y;
     if (rx > 0 && Math.abs(ry) < rx * 0.8 + 1.5) ahead = Math.min(ahead, hyp(rx, ry));
   }
-  let dribV = 0.15 + clamp(ahead, 0, 15) * 0.04 - pressure * 0.55 + (a.a.dribbling / 99) * 0.2;
-  const lane = mine ? dribbleLane(e, a) : null;
-  if (lane) dribV = 0.15 + clamp(lane.space, 0, 10) * 0.05 - pressure * 0.45 + (a.a.dribbling / 99) * 0.2 + lane.prog * 0.15;
+  const lane = dribbleLane(e, a);
+  const dribV = 0.15 + clamp(lane.space, 0, 10) * 0.05 - pressure * 0.45 + (a.a.dribbling / 99) * 0.2 + lane.prog * 0.15;
 
   const noise = () => e.rng.normal(0, 0.12 * (1.2 - vision));
   const choices: [string, number][] = [
@@ -1271,30 +1401,209 @@ export function carrierThink(e: Engine, a: Agent): void {
     }, 0.12);
     return;
   }
-  if (lane) {
-    // into the space (or shield it when there is none)
-    if (lane.space < 2.2 && pressure > 0.45 && !settle) { shield(e, a); a.think = 0.12; return; }
-    a.target = { x: clamp(pos.x + lane.h.x * 7, -HL + 1, HL - 1), y: clamp(pos.y + lane.h.y * 7, -HW + 1.5, HW - 1.5) };
-    if (dGoal < 18) { a.target = { x: dir * (HL - 6), y: pos.y * 0.5 }; }
-    a.urgency = lane.space > 7 && pressure < 0.3 ? 1 : settle ? 0.7 : 0.82;
-    a.duty = 'carry';
-    return;
-  }
-  // dribble toward goal, away from the nearest opponent
-  const near = e.nearestOpp(a);
-  let tx = pos.x + dir * 7;
-  let ty = pos.y * 0.88;
-  if (near.o && near.d < 5) {
-    const sy = Math.sign(pos.y - near.o.st.pos.y) || (e.rng.chance(0.5) ? 1 : -1);
-    ty += sy * (5 - near.d) * 1.3;
-  }
-  if (dGoal < 18) { tx = dir * (HL - 6); ty = pos.y * 0.5; }
-  a.target = { x: clamp(tx, -HL + 1, HL - 1), y: clamp(ty, -HW + 1.5, HW - 1.5) };
-  a.urgency = ahead > 8 && pressure < 0.3 ? 1 : 0.82;
+  // ── take the man in front on: a feint / change of pace past him ──
+  if (takeOnStep(e, a, settle)) return;
+  // into the space (or shield it when there is none)
+  if (lane.space < 2.2 && pressure > 0.45 && !settle) { shield(e, a); a.think = 0.12; return; }
+  a.target = { x: clamp(pos.x + lane.h.x * 7, -HL + 1, HL - 1), y: clamp(pos.y + lane.h.y * 7, -HW + 1.5, HW - 1.5) };
+  if (dGoal < 18) { a.target = { x: dir * (HL - 6), y: pos.y * 0.5 }; }
+  // (a runner in behind carries on at pace: no stop-start after the first touch)
+  const csp = hyp(a.st.vel.x, a.st.vel.y);
+  a.urgency = (lane.space > 7 && pressure < 0.3) || (csp > 4.5 && lane.space > 4.5 && pressure < 0.45) ? 1 : settle ? 0.7 : 0.82;
   a.duty = 'carry';
 }
 
+/** The opponent squarely in front of the carrier on his way to goal (within ~3.8 m), or null. */
+function manInFront(e: Engine, a: Agent, within = 3.8): Agent | null {
+  const pos = a.st.pos;
+  const dir = a.dir;
+  const gx = dir * HL - pos.x;
+  const gy = -pos.y * 0.5;
+  const gl = hyp(gx, gy) || 1;
+  let best: Agent | null = null;
+  let bd = within;
+  for (const o of e.agents) {
+    if (o.side === a.side || o.isGK || o.passive || o.stun > 0) continue;
+    const rx = o.st.pos.x - pos.x;
+    const ry = o.st.pos.y - pos.y;
+    const d = hyp(rx, ry);
+    if (d >= bd) continue;
+    const along = (rx * gx + ry * gy) / gl;
+    const lat = Math.abs(rx * gy - ry * gx) / gl;
+    if (along > 0.3 && lat < 1.6 + 0.3 * along) { bd = d; best = o; }
+  }
+  return best;
+}
+
+/**
+ * Take-on (both teams, by dribbling skill): a shimmy one way with the pace off, then a burst past
+ * the defender on the side with room — or just a change of pace. A defender who bites leans the
+ * wrong way for a beat (he recovers with his own acceleration and turning). Returns whether the
+ * carrier is in the move (his target / urgency are set).
+ */
+function takeOnStep(e: Engine, a: Agent, settle: boolean): boolean {
+  const t = e.state.time;
+  const pos = a.st.pos;
+  const sp = hyp(a.st.vel.x, a.st.vel.y);
+  let to = a.takeOn ?? null;
+  if (to && t >= to.until) to = a.takeOn = null;
+  if (!to) {
+    if (settle || a.carryT < 0.25) return false;
+    const o = manInFront(e, a, 6.5);
+    if (!o) return false;
+    const od = hyp(o.st.pos.x - pos.x, o.st.pos.y - pos.y);
+    const drib = clamp(a.a.dribbling, 1, 99) / 99;
+    const h = unitV(o.st.pos.x - pos.x, o.st.pos.y - pos.y);
+    const n = { x: -h.y, y: h.x };
+    // the side with room past him (never into the touchline; the side he leaves open, mostly)
+    let side = 1;
+    let bestRoom = -Infinity;
+    for (const sg of [1, -1]) {
+      const px = o.st.pos.x + n.x * sg * 2.6 + h.x * 1.5;
+      const py = o.st.pos.y + n.y * sg * 2.6 + h.y * 1.5;
+      let room = Math.abs(py) > HW - 1.5 || Math.abs(px) > HL - 1 ? -10 : 6;
+      for (const q of e.agents) {
+        if (q.side === a.side || q.passive || q === o) continue;
+        room = Math.min(room, hyp(q.st.pos.x - px, q.st.pos.y - py));
+      }
+      const open = -((o.st.pos.x - pos.x) * n.x + (o.st.pos.y - pos.y) * n.y) * sg;
+      const v = room + open * 1.5 + (a.i % 2 ? 0.3 : -0.3) * sg;
+      if (v > bestRoom) { bestRoom = v; side = sg; }
+    }
+    if (od > 4.2 || sp < 2.6) {
+      // drive at him first (a take-on needs pace): straight at his outside shoulder
+      if (od < 2 || !e.rng.chance(0.35 + 0.55 * drib)) return false;
+      a.target = { x: clamp(o.st.pos.x + n.x * side * 0.9, -HL + 1, HL - 1), y: clamp(o.st.pos.y + n.y * side * 0.9, -HW + 1.5, HW - 1.5) };
+      a.urgency = 1;
+      a.think = 0.1;
+      a.duty = 'carry';
+      return true;
+    }
+    // (a good dribbler takes him on; a poorer one keeps it simple / shields)
+    if (!e.rng.chance(0.25 + 0.6 * drib)) return false;
+    // (the shimmy needs a yard of room: right on top of him it is just the cut)
+    const feint = od > 2.9 && e.rng.chance(0.25 + 0.6 * drib);
+    // (the cut has to start a stride away, out of his reach: no shimmy closer in)
+    if (!feint && od > 3.3) {
+      a.target = { x: clamp(o.st.pos.x + n.x * side * 0.9, -HL + 1, HL - 1), y: clamp(o.st.pos.y + n.y * side * 0.9, -HW + 1.5, HW - 1.5) };
+      a.urgency = 1;
+      a.think = 0.06;
+      a.duty = 'carry';
+      return true;
+    }
+    const burst = t + (feint ? 0.16 : 0.02);
+    to = a.takeOn = { side, t0: t, burst, until: burst + 0.75, o: o.i, feint };
+    if (feint && !o.isUser) {
+      const bite = clamp(0.18 + 0.52 * drib - 0.32 * (clamp(o.a.positioning, 1, 99) / 99) + (o.reaction - 0.2) * 1.2, 0.08, 0.72);
+      if (e.rng.chance(bite)) {
+        const lean = { x: o.st.pos.x - n.x * side * 2.2 - h.x * 0.5, y: o.st.pos.y - n.y * side * 2.2 - h.y * 0.5 };
+        o.sold = { until: burst + 0.12 + 0.22 * drib, lean };
+        o.target = { x: lean.x, y: lean.y };
+        o.urgency = 0.9;
+      }
+    }
+  }
+  const o = e.agents[to.o];
+  if (!o || (o.st.pos.x - pos.x) * a.dir < -0.4) { a.takeOn = null; return false; }
+  const h = unitV(o.st.pos.x - pos.x, o.st.pos.y - pos.y);
+  const n = { x: -h.y, y: h.x };
+  const gx = a.dir * HL - pos.x;
+  const gy = -pos.y * 0.5;
+  const gl = hyp(gx, gy) || 1;
+  if (t < to.burst) {
+    // the shimmy: the weight onto the other side, the pace off a touch
+    a.target = { x: clamp(pos.x + h.x * 1.5 - n.x * to.side * 1.8, -HL + 1, HL - 1), y: clamp(pos.y + h.y * 1.5 - n.y * to.side * 1.8, -HW + 1.5, HW - 1.5) };
+    a.urgency = 0.75;
+    a.think = Math.max(0.02, to.burst - t);
+  } else {
+    // the cut beside him, then on past him toward goal
+    const level = ((o.st.pos.x - pos.x) * gx + (o.st.pos.y - pos.y) * gy) / gl;
+    const px = level > 0.6 ? o.st.pos.x + n.x * to.side * 2.6 + (gx / gl) * 0.6 : pos.x + (gx / gl) * 5 + n.x * to.side * 1.2;
+    const py = level > 0.6 ? o.st.pos.y + n.y * to.side * 2.6 + (gy / gl) * 0.6 : pos.y + (gy / gl) * 5 + n.y * to.side * 1.2;
+    a.target = { x: clamp(px, -HL + 1, HL - 1), y: clamp(py, -HW + 1.5, HW - 1.5) };
+    a.urgency = 1;
+    a.think = clamp(to.until - t, 0.04, 0.12);
+  }
+  a.duty = 'carry';
+  return true;
+}
+
 const DRIB_ANG = [0, 0.45, -0.45, 0.9, -0.9, 1.4, -1.4];
+
+/** Headings tried for an AI first touch (relative to the way to goal), the half-turn ones included. */
+const TOUCH_ANG = [0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.4, -2.4, Math.PI];
+
+/**
+ * AI first touch (both teams): the ball is taken on the half-turn, away from the nearest opponent
+ * and toward goal / space when the body shape allows it — a runner played in behind takes it on in
+ * his stride. The better his first touch, the surer the pick; the sharper the turn at speed, the
+ * more pace it costs (locomotion turns the rest).
+ */
+export function aiFirstTouch(e: Engine, a: Agent): void {
+  const pos = a.st.pos;
+  const v = a.st.vel;
+  const dir = a.dir;
+  const sp = hyp(v.x, v.y);
+  const ft = clamp(a.a.firstTouch, 1, 99) / 99;
+  const goalH = pos.x * dir > 12 ? Math.atan2(-pos.y * 0.85, dir * HL - pos.x) : dir > 0 ? 0 : Math.PI;
+  const cur = sp > 0.8 ? Math.atan2(v.y, v.x) : a.st.facing;
+  const near = e.nearestOpp(a);
+  const pr = e.pressureOn(a);
+  let bestH = cur;
+  let bestV = -Infinity;
+  let secondH = cur;
+  let secondV = -Infinity;
+  for (const da of TOUCH_ANG) {
+    const h = goalH + da;
+    const hx = Math.cos(h);
+    const hy = Math.sin(h);
+    const ex = pos.x + hx * 5;
+    const ey = pos.y + hy * 5;
+    if (Math.abs(ey) > HW - 1.2 || Math.abs(ex) > HL - 0.8) continue;
+    // room along it: the nearest opponent to the line of the touch (and the point it reaches)
+    let room = 8;
+    for (const o of e.agents) {
+      if (o.side === a.side || o.passive) continue;
+      const r = segDist(o.st.pos.x, o.st.pos.y, pos.x, pos.y, ex, ey);
+      room = Math.min(room, r.d + r.s * 1.2);
+    }
+    // a turn at speed costs (and an open body is needed to turn with it)
+    let turn = Math.abs(h - cur);
+    while (turn > Math.PI) turn = Math.abs(turn - 2 * Math.PI);
+    const prog = hx * dir;
+    // (at pace the touch goes on the way he is running: a runner in behind keeps his stride)
+    let val = Math.min(room, 6) * 0.4 + prog * (1.2 - 0.6 * pr) - turn * (0.1 + 0.09 * sp * (1 - pr));
+    // away from the man on him (the half-turn: never into him)
+    if (near.o && near.d < 4) {
+      const ax = pos.x - near.o.st.pos.x;
+      const ay = pos.y - near.o.st.pos.y;
+      const al = hyp(ax, ay) || 1;
+      const away = (hx * ax + hy * ay) / al;
+      val += away * (0.5 + 2.5 * pr);
+      if (away < 0.1 && near.d < 2.8) val -= 1.5;
+    }
+    if (val > bestV) { secondV = bestV; secondH = bestH; bestV = val; bestH = h; }
+    else if (val > secondV) { secondV = val; secondH = h; }
+  }
+  // (a poorer first touch sometimes sets it the second-best way)
+  const h = e.rng.chance(0.55 + 0.42 * ft) ? bestH : secondH;
+  let d = h - cur;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  if (sp > 0.5) {
+    const ang = cur + clamp(d, -1.0, 1.0);
+    const keep = clamp(1 - Math.abs(d) * (0.32 - 0.12 * ft), 0.5, 0.97);
+    v.x = Math.cos(ang) * sp * keep;
+    v.y = Math.sin(ang) * sp * keep;
+  }
+  a.st.facing += clamp(angDiff(a.st.facing, h), -0.7, 0.7);
+  a.touch = 0;
+  // ...and he goes with it (no stop-start): a runner in behind at full pace
+  const room = Math.max(0, bestV);
+  a.target = { x: clamp(pos.x + Math.cos(h) * 7, -HL + 1, HL - 1), y: clamp(pos.y + Math.sin(h) * 7, -HW + 1.5, HW - 1.5) };
+  a.urgency = sp > 4.5 && pr < 0.4 ? 1 : sp > 2.5 || room > 2 ? 0.86 : 0.7;
+  a.duty = 'carry';
+}
 
 /** The most open heading to carry the ball into (space along it, progress toward goal). */
 function dribbleLane(e: Engine, a: Agent): { h: Vec2; space: number; prog: number } {
@@ -1322,6 +1631,66 @@ function dribbleLane(e: Engine, a: Agent): { h: Vec2; space: number; prog: numbe
     if (v > bestV) { bestV = v; best = { h, space, prog }; }
   }
   return best;
+}
+
+/**
+ * A pass bent round the man in the lane (side-spin either way, the same target and pace): the
+ * noise-free flight judged against every opponent like a straight one; null when neither way is on.
+ * Better passers bend it more surely.
+ */
+function bentAround(e: Engine, a: Agent, m: Agent, plain: LedPass, thr: number): KickParams | null {
+  const b = e.state.ball.pos;
+  const k = e.kicker(a);
+  const pass = clamp(a.a.passing, 1, 99) / 99;
+  if (pass < 0.45) return null;
+  const at = plain.at;
+  const d = hyp(at.x - b.x, at.y - b.y);
+  const arrive = clamp(5.6 + d * 0.08, 6, 9.5);
+  for (const curl of [0.5, -0.5]) {
+    const params = curledPass(e.env, k, { x: b.x, y: b.y, z: b.z }, at, arrive, curl * (0.7 + 0.3 * pass));
+    const spec = e.kickSpec(a, params, 'ground', false);
+    const path = predictPath(launched({ x: b.x, y: b.y, z: BR }, params, k, spec), e.env, clamp(d / 6 + 0.8, 1.2, 3), 4);
+    const tRecv = interceptFor(e, m, path, 0.6).t;
+    let tOpp = Infinity;
+    for (const o of e.agents) {
+      if (o.side === a.side || o.passive || o.stun > 0.4) continue;
+      tOpp = Math.min(tOpp, interceptFor(e, o, path, 0.6).t, bodyT(o, path));
+    }
+    if (tOpp - tRecv > thr) return params;
+  }
+  return null;
+}
+
+/**
+ * Waiting for the lane to the user to open: with a yard of room he moves the ball off the line of
+ * the man cutting it out (a touch sideways opens the angle); pressed, he shields it.
+ */
+function openLane(e: Engine, a: Agent): void {
+  const u = e.user;
+  const pos = a.st.pos;
+  if (e.pressureOn(a) > 0.45) { shield(e, a); return; }
+  // (the man who gets across the lane soonest: his distance to it against how far down it he is)
+  let cut: Agent | null = null;
+  let bd = 2.5;
+  const L = hyp(u.st.pos.x - pos.x, u.st.pos.y - pos.y) || 1;
+  for (const o of e.agents) {
+    if (o.side === a.side || o.passive || o.isGK) continue;
+    const r = segDist(o.st.pos.x, o.st.pos.y, pos.x, pos.y, u.st.pos.x, u.st.pos.y);
+    if (r.s <= 0.03 || r.s >= 0.97) continue;
+    const v = r.d / (r.s * L);
+    if (v < bd) { bd = v; cut = o; }
+  }
+  if (!cut) { shield(e, a); return; }
+  // perpendicular to the lane, away from the side the interceptor is on
+  const lx = u.st.pos.x - pos.x;
+  const ly = u.st.pos.y - pos.y;
+  const ll = hyp(lx, ly) || 1;
+  const nx = -ly / ll;
+  const ny = lx / ll;
+  const side = ((cut.st.pos.x - pos.x) * nx + (cut.st.pos.y - pos.y) * ny) > 0 ? -1 : 1;
+  a.target = { x: clamp(pos.x + nx * side * 2.5, -HL + 1, HL - 1), y: clamp(pos.y + ny * side * 2.5, -HW + 1.5, HW - 1.5) };
+  a.urgency = 0.62;
+  a.duty = 'carry';
 }
 
 /** Protect the ball: slow down and turn the body away from the nearest opponent. */
@@ -1354,7 +1723,7 @@ export function aiHeader(e: Engine, a: Agent): void {
   const dGoal = distToGoal({ x: b.x, y: b.y }, dir);
   const ownGoalD = distToGoal({ x: b.x, y: b.y }, (-dir) as 1 | -1);
   if (dGoal < 16 && b.x * dir > 0) {
-    const p = shotParams(e, a, { power: 0.85, zLow: 0.2, zHigh: 1.3, kind: 'header', curl: 0 });
+    const p = shotParams(e, a, { power: 0.85, zLow: 0.1, zHigh: 0.75, kind: 'header', curl: 0 });
     e.execKick(a, p, { kind: 'header', isShot: true });
     return;
   }
@@ -1381,24 +1750,70 @@ export function aiHeader(e: Engine, a: Agent): void {
   e.execKick(a, { dir: { x: dx / l, y: dy / l }, power: clamp(0.25 + bd * 0.03, 0.3, 0.8), loft: 0.4, curl: 0 }, { kind: 'header', isShot: false, target: to ? -1 : -1 });
 }
 
-/** A runner meeting a ball played into his path: the first point of its flight his sprint gets him to, run through. */
-function strideMeet(e: Engine, a: Agent): Vec2 | null {
+/**
+ * A runner meeting a ball played into his path: the point of its flight he gets to in his stride —
+ * on along his run rather than checking back across to it, timed to arrive with the ball, before
+ * any opponent — run through (aimed a few metres beyond, so he is still at full stride when he
+ * takes it); when he would be there well before the ball he eases onto the point instead.
+ */
+function strideMeet(e: Engine, a: Agent, oppT = Infinity): { p: Vec2; urg: number } | null {
   const path = e.ballPath();
   const age = e.loosePath ? Math.max(0, e.state.time - e.loosePath.t) : 0;
   const vmax = a.topSpeed * (0.82 + 0.18 * a.st.stamina);
+  const sp = hyp(a.st.vel.x, a.st.vel.y);
+  // the way he is running (from a standstill: toward goal)
+  const rx = sp > 2 ? a.st.vel.x / sp : a.dir;
+  const ry = sp > 2 ? a.st.vel.y / sp : 0;
+  let best = -1;
+  let bestC = Infinity;
+  let bestSlack = 0;
   for (let i = 1; i < path.length; i++) {
     const q = path[i];
     const qt = q.t - age;
     if (q.z > 1.0 || qt <= 0.05) continue;
+    if (Math.abs(q.x) > HL - 0.5 || Math.abs(q.y) > HW - 0.5) break;
+    // (an opponent there first: no later point is his)
+    if (qt > oppT - 0.1 && best >= 0) break;
     const dx = q.x - a.st.pos.x;
     const dy = q.y - a.st.pos.y;
     const d = hyp(dx, dy);
     const v0 = d > 0.3 ? Math.max(0, (a.st.vel.x * dx + a.st.vel.y * dy) / d) : 0;
-    if (runTime(Math.max(0, d - 0.6), v0, vmax, a.accel) <= qt + 0.04) {
-      return d > 0.3 ? { x: q.x + (dx / d) * 1.5, y: q.y + (dy / d) * 1.5 } : { x: q.x, y: q.y };
-    }
+    const tr = runTime(Math.max(0, d - 0.6), v0, vmax, a.accel);
+    const slack = qt - tr;
+    if (slack < -0.04) continue;
+    const fwd = d > 0.5 ? (dx * rx + dy * ry) / d : 1;
+    const c = Math.abs(slack - 0.1) * 1.5 + Math.max(0, 0.3 - fwd) * 2.5 + qt * 0.15;
+    if (c < bestC) { bestC = c; best = i; bestSlack = slack; }
+    // (well into the future with nothing better: stop looking)
+    if (best >= 0 && slack > 1.2) break;
   }
-  return null;
+  if (best < 0) return null;
+  const q = path[best];
+  const dx = q.x - a.st.pos.x;
+  const dy = q.y - a.st.pos.y;
+  const d = hyp(dx, dy);
+  if (d <= 0.3) return { p: { x: q.x, y: q.y }, urg: 1 };
+  const qt = q.t - age;
+  if (bestSlack > 0.35 && d < 6) {
+    // early: arrive with the ball (no running across its line before it gets there)
+    return { p: { x: q.x, y: q.y }, urg: clamp(d / Math.max(0.3, qt) / vmax + 0.3, 0.55, 1) };
+  }
+  // through it in his stride, going with the ball: a ball running on ahead of him is chased at
+  // full pace; one coming across him is met on its line, easing into its direction (a softer touch)
+  const pv = path[Math.max(0, best - 1)];
+  const bv = hyp(q.x - pv.x, q.y - pv.y);
+  let ux = dx / d;
+  let uy = dy / d;
+  let cos = 1;
+  if (bv > 1e-3) {
+    const bx = (q.x - pv.x) / bv;
+    const by = (q.y - pv.y) / bv;
+    cos = bx * ux + by * uy;
+    ux = ux * 0.35 + bx * 0.65; uy = uy * 0.35 + by * 0.65;
+    const l = hyp(ux, uy) || 1; ux /= l; uy /= l;
+  }
+  const over = 3 + 1.5 * clamp(cos, 0, 1);
+  return { p: { x: q.x + ux * over, y: q.y + uy * over }, urg: 1 };
 }
 
 /**

@@ -8,12 +8,13 @@ import { clamp } from '../../core/util';
 import type { MomentEngine } from './api';
 import { GW, HL, HW } from './constants';
 import { Engine } from './engine';
-import { distToGoal, hyp } from './geom';
+import { baseXg, distToGoal, hyp } from './geom';
 import type { Agent } from './internal';
 import { naturalCurlSign } from './kick';
 import { laneRisk, ledPass, openMates, passOptions } from './ai';
 import { bentPass, passCurl, throughParams } from './aim';
 import { deliverCross, inBoxArea, inCrossZone } from './cross';
+import { runPath, runnerState } from './runs';
 import { atDistance, curledPass, groundPass, launched, predictPath, solveLob, solveShot } from './solver';
 
 export interface ShotIntent {
@@ -328,10 +329,48 @@ function prefDir(e: Engine, intent: PassIntent): Vec2 {
   return { x: 1, y: 0 };
 }
 
+/**
+ * A ball in behind for a runner: the point of his projected run (runs.ts) behind the line that he
+ * reaches about when a ball weighted to die into the space does, the way the user is looking.
+ */
+function runnerThrough(e: Engine, pd: Vec2): PassPick | null {
+  const u = e.user;
+  const b = e.state.ball.pos;
+  const dir = u.dir;
+  const line = e.offsideX(u.side) * dir;
+  let best: PassPick | null = null;
+  let bestV = -Infinity;
+  for (const m of e.agents) {
+    if (m.side !== u.side || m === u || m.isGK || m.passive || m.stun > 0) continue;
+    const st = runnerState(m);
+    if (!st) continue;
+    const mu = m.st.pos.x * dir;
+    if (mu > line + 0.2 && mu > b.x * dir + 0.2) continue;
+    const pts = runPath(e, m, 2.2, 0.1);
+    for (let k = 5; k < pts.length; k += 2) {
+      const q = pts[k];
+      const tq = (k + 1) * 0.1;
+      if (q.x * dir < line + 1 || q.x * dir > HL - 6) continue;
+      const dq = hyp(q.x - b.x, q.y - b.y);
+      if (dq < 6 || dq > 40) continue;
+      // (a through ball dies into the space: ~14 m/s on average over its run)
+      const tb = 0.15 + dq / 14;
+      if (Math.abs(tb - tq) > 0.4) continue;
+      const cos = ((q.x - b.x) * pd.x + (q.y - b.y) * pd.y) / dq;
+      const risk = laneRisk(e, u, { x: b.x, y: b.y }, q, 15);
+      const v = baseXg(q, dir) * 3 + (q.x - b.x) * dir * 0.04 + cos * 1.2 - risk * 0.6 + (st === 'live' ? 0.4 : 0);
+      if (v > bestV) { bestV = v; best = { id: m.id, at: { x: q.x, y: q.y }, lofted: risk > 1.4 || dq > 34 }; }
+    }
+  }
+  return best;
+}
+
 function throughPick(e: Engine, intent: PassIntent): PassPick | null {
   const u = e.user;
   const b = e.state.ball.pos;
   const pd = prefDir(e, intent);
+  const run = runnerThrough(e, pd);
+  if (run) return run;
   let best: Agent | null = null;
   let bestV = -Infinity;
   for (const m of e.agents) {

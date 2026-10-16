@@ -111,6 +111,43 @@ export interface Agent {
   freeRun?: boolean;
   /** AI kick being wound up: the strike happens when `t` runs out (still on the ball). */
   windup?: { t: number; go: () => void } | null;
+  /** Timed run in behind (runs.ts): held on the last defender's shoulder, then the burst. */
+  run?: RunMem | null;
+  /** AI ball carrier taking a man on (feint / cut / burst), see carrierThink. */
+  takeOn?: TakeOn | null;
+  /** Defender sold by a feint: leans the wrong way until this sim time (toward `lean`). */
+  sold?: { until: number; lean: Vec2 } | null;
+}
+
+/** A run in behind (runs.ts). */
+export interface RunMem {
+  kind: 'behind' | 'third';
+  /** hold: on the shoulder, waiting for the passer · go: the burst · bend: along the line (ball not played yet) · recover: back onside. */
+  phase: 'hold' | 'go' | 'bend' | 'recover';
+  /** Sim time the phase began. */
+  t: number;
+  /** Where the run finishes, behind the line. */
+  end: Vec2;
+  /** Lateral side of the bend along the line (−1 / +1 in world y). */
+  side: number;
+  /** Carrier (agent index) the run is timed for. */
+  c: number;
+  /** No new burst before this sim time (re-timing after being caught). */
+  cool: number;
+}
+
+/** A take-on: shape one way (the feint, pace dropped), then burst past on the other side. */
+export interface TakeOn {
+  /** Side (−1 / +1, relative to his heading: + = left) of the burst. */
+  side: number;
+  /** Sim time the feint started / the burst starts / it is over. */
+  t0: number;
+  burst: number;
+  until: number;
+  /** The defender he is taking on. */
+  o: number;
+  /** Feint (a shimmy first) or a plain change of pace. */
+  feint: boolean;
 }
 
 export type SupRole = 'shortA' | 'shortB' | 'squareA' | 'squareB' | 'line' | 'deep' | 'wideA' | 'wideB' | 'run' | 'overlap' | 'shape';

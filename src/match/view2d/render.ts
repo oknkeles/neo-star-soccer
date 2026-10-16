@@ -932,3 +932,37 @@ function drawOneTwo(ctx: CanvasRenderingContext2D, c: Cam, m: Vec2 | undefined, 
     ctx.fillText(label, x, y + 0.5);
   }
 }
+
+/** Calm mode (game frozen): each runner's projected run as a subtle dotted line with an arrowhead. */
+export function drawRunCues(ctx: CanvasRenderingContext2D, c: Cam, cues: readonly { pts: readonly Vec2[]; live: boolean }[], clock: number): void {
+  if (!cues.length) return;
+  screenT(ctx, c);
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 2.6;
+  for (const cue of cues) {
+    const pts = cue.pts;
+    if (pts.length < 2) continue;
+    const a = cue.live ? 0.62 + 0.12 * Math.sin(clock * 4) : 0.34;
+    ctx.strokeStyle = `rgba(236,255,242,${a})`;
+    ctx.fillStyle = `rgba(236,255,242,${a})`;
+    ctx.setLineDash([2.5, 5.5]);
+    ctx.beginPath();
+    ctx.moveTo(sx(c, pts[0].x), sy(c, pts[0].y));
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(sx(c, pts[i].x), sy(c, pts[i].y));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const p = pts[pts.length - 1];
+    const q = pts[pts.length - 2];
+    const x = sx(c, p.x);
+    const y = sy(c, p.y);
+    const ang = Math.atan2(sy(c, p.y) - sy(c, q.y), sx(c, p.x) - sx(c, q.x));
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(ang) * 7, y + Math.sin(ang) * 7);
+    ctx.lineTo(x + Math.cos(ang + 2.5) * 6, y + Math.sin(ang + 2.5) * 6);
+    ctx.lineTo(x + Math.cos(ang - 2.5) * 6, y + Math.sin(ang - 2.5) * 6);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}

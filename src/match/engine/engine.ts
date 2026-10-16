@@ -22,7 +22,7 @@ import {
   ballSpeed, integrateBall, newAux, newReport, physEnv, resetReport, type BallAux, type PhysEnv, type StepReport,
 } from './physics';
 import { crossPlane, freshBall, launched, predictPath } from './solver';
-import { aiUpdate, carrierThink } from './ai';
+import { aiFirstTouch, aiUpdate, carrierThink, claimPass } from './ai';
 import { angDiff, faceStep, locoStep, strideLen, V_FREE, type LocoParams } from './locomotion';
 import { keeperTick, newKeeperMem } from './keeper';
 import { initMoment, drillTick, scriptTick, type MomentScript } from './moments';
@@ -329,7 +329,7 @@ export class Engine {
         this.stopAiming();
         break;
       case 'kick':
-        this.userKick(cmd.params);
+        this.userKick(cmd.params, cmd.to ?? null, !!cmd.through);
         break;
       case 'aftertouch':
         this.aftertouch(cmd.spin);
@@ -403,7 +403,24 @@ export class Engine {
     if (p.power < 0.3 && d > 16) return false;
     if (Math.abs(p.dir.y) > 0.8 && d > 14) return false;
     const yAt = b.y + p.dir.y * (dx / p.dir.x);
-    if (Math.abs(yAt) < GW + 6) return true;
+    if (Math.abs(yAt) < GW + 6) {
+      // (a ball along the ground that dies before the goal line is a pass into space — a through
+      // ball for a runner at goal — not a shot)
+      if (p.loft < 0.15 && d > 10 && kind === 'ground') {
+        const spec: KickSpec = { kind, isShot: true, pressure: 0, difficulty: 0.5 };
+        const path = predictPath(launched(b, p, this.kicker(a), spec), this.env, 4, 4);
+        let k = 1;
+        while (k < path.length && (path[k].x - gx) * dir < 0) k++;
+        if (k >= path.length) return false;
+        // (...or only trickles over the line / runs on wide of the post: a softly weighted ball for
+        // a runner to get on the end of)
+        const q = path[k - 1];
+        const r = path[k];
+        if (hyp(r.x - q.x, r.y - q.y) / Math.max(1e-3, r.t - q.t) < 6.5) return false;
+        if (p.power < 0.55 && Math.abs(q.y + ((r.y - q.y) * (gx - q.x)) / ((r.x - q.x) || 1e-6)) > GW + 0.5) return false;
+      }
+      return true;
+    }
     if (Math.abs(p.curl) < 0.2 || d > 36) return false;
     // a curler aimed outside the post: judge by where it actually bends to
     const spec: KickSpec = { kind, isShot: true, pressure: 0, difficulty: 0.5 };
@@ -522,6 +539,8 @@ export class Engine {
       rec.offside = this.offsidePlayers(a, from);
       if (rec.target < 0) rec.target = this.guessReceiver(a, p);
       rec.cross = rec.cross || this.crossKick(a, from, p);
+      // the user's pass: claimed at once by the team-mate who gets there first (into his run)
+      if (a.isUser && !rec.cross && !this.frozen) claimPass(this, rec, opts.target !== undefined);
     }
     this.kicks.push(rec);
     this.lastKick = rec;
@@ -611,13 +630,14 @@ export class Engine {
 
   // ───────────────────────── user actions ─────────────────────────
 
-  private userKick(raw: KickParams): void {
+  private userKick(raw: KickParams, to: string | null = null, through = false): void {
     if (!raw || typeof raw !== 'object') return;
     if (this.drill?.kicked) return;
     const s = this.state;
     if (s.phase === 'intro') return;
     if (this.canKick()) {
-      this.execKick(this.user, raw, { setPiece: this.frozen && this.setPiece !== null });
+      const m = to ? this.agents.find((x) => x.id === to && x.side === this.user.side && !x.isUser) : undefined;
+      this.execKick(this.user, raw, { setPiece: this.frozen && this.setPiece !== null, target: m ? m.i : undefined, isShot: m || through ? false : undefined, through: through && !this.frozen });
       return;
     }
     // ball on its way: buffer the strike for a moment (volleys / headers)
@@ -848,6 +868,8 @@ export class Engine {
     }
     // pressed as it arrives: lay it off first time (the decision comes straight away)
     if (fromReceive && !a.isUser && !a.isGK && this.pressureOn(a) > 0.55) a.think = Math.min(a.think, 0.04);
+    // the AI's first touch: on the half-turn, into space, a runner in his stride
+    if (fromReceive && !a.isUser && !a.isGK) aiFirstTouch(this, a);
     if (fromReceive && a.isUser && this.ctl.dir) {
       // directional first touch: the ball (and he) go the way he is steering — a touch-and-go
       // turns his run by up to ~90° at once (the sharper the turn, the more speed it costs)
@@ -958,7 +980,9 @@ export class Engine {
       if (this.drill) drillTick(this);
     }
     if (live && !this.frozen) {
-      if (this.tickNo % 12 === 0 || this.loosePath === null) aiUpdate(this);
+      // (10 Hz — and at once after the user's kick: his pass is read the moment it is struck)
+      const fresh = !!this.lastKick && this.lastKick.user && this.lastKick.id !== this.aiKick;
+      if (this.tickNo % 12 === 0 || this.loosePath === null || fresh) { if (this.lastKick) this.aiKick = this.lastKick.id; aiUpdate(this); }
       const o = this.owner;
       if (o && !o.isUser && !o.isGK && !over) {
         o.think -= DT;
@@ -1211,6 +1235,8 @@ export class Engine {
   }
 
   private wantV: Vec2 = { x: 0, y: 0 };
+  /** Last kick the coordinator has run for. */
+  private aiKick = -1;
 
   /**
    * The action bar: sprinting drains it, carrying the ball more (most at a sprint with the ball),
@@ -1238,7 +1264,7 @@ export class Engine {
   }
 
   /** Locomotion limits for an agent this tick (the user's player answers a little quicker). */
-  private locoParams(a: Agent, fatigue: number, owns: boolean): LocoParams {
+  locoParams(a: Agent, fatigue: number, owns: boolean): LocoParams {
     const acc = clamp(a.a.acceleration, 1, 99) / 99;
     let a0 = a.accel;
     let brake = 7.4 + 2.6 * acc;
@@ -1526,6 +1552,11 @@ export class Engine {
       if (!a.isUser && k && k.isShot && k.side === a.side && k.result === 'pending' && s.time - k.t < 2.5) continue;
       // ...and leave a ball played to the user to him (no nicking his cross / pass)
       if (!a.isUser && userBall && a.side === this.user.side) continue;
+      // ...and a ball played into a team-mate's run to him: let it run on (he is coming onto it)
+      if (!a.isUser && k && k.through && !k.isShot && !k.completed && !k.oppTouched && k.side === a.side && k.target >= 0 && k.target !== a.i && s.time - k.t < 3) {
+        const r = this.agents[k.target];
+        if (r && !r.isUser && r.stun <= 0 && r.duty === 'receive' && Number.isFinite(r.eit) && r.eit < 3) continue;
+      }
       if (a.isUser && (this.ctl.aiming || this.ctl.pending)) continue;
       // AI headers / volleys at goal or clearances
       // (a cross played to the user: his marker is a beat slower to it on easy / normal)

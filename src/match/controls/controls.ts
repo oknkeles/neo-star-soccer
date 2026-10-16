@@ -448,9 +448,12 @@ export class Controls {
     const a = this.aim;
     if (!a) return;
     const params = kick ? a.params() : null;
+    // (a pass the assist snapped onto a team-mate's run is meant for him)
+    const an = params ? a.analysis() : null;
+    const to = an && an.kind === 'pass' && an.snapped ? an.receiverId : null;
     this.aim = null;
     this.aimPointer = null;
-    if (params) this.send({ kind: 'kick', params });
+    if (params) this.send({ kind: 'kick', params, to, through: !!to && !!an?.through });
     else this.send({ kind: 'aimCancel' });
     // keys pressed while aiming are not movement until released; the run resumes from the keys held
     for (const c of this.keys) if (!this.aimHeld.has(c)) this.aimKeys.add(c);
@@ -561,7 +564,7 @@ export class Controls {
     const curl = ((this.keys.has('KeyQ') ? 1 : 0) - (this.keys.has('KeyE') ? 1 : 0)) * PASS_CURL;
     const p = assistPass(this.engine, { pref, toward, through, cone: through ? undefined : PASS_CONE, curl });
     if (p) {
-      this.send({ kind: 'kick', params: p });
+      this.send({ kind: 'kick', params: p, through });
       this.acted = this.clock;
     }
   }

@@ -99,3 +99,5 @@ export function autoResolve(setup: MomentSetup, rng: Rng): MomentResult {
  */
 export { assistShot, assistShotDir, assistPass, pickPass, assistInfo, kickDir, goalBound, supportInfo, GOAL_CONE } from './assist';
 export type { ShotIntent, DirShotIntent, PassIntent, PassPick, AssistInfo, SupportCue } from './assist';
+export { runnerCues } from './runs';
+export type { RunnerCue } from './runs';

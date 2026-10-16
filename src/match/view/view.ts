@@ -9,7 +9,7 @@ import { t } from '../../core/i18n';
 import { onSettingsChange, updateSettings } from '../../core/settings';
 import type { CameraMode, Kit, MomentEvent, MomentPlayerSpec, MomentPlayerState, MomentSetup, ReplayFrame, Vec2, Vec3 } from '../../core/types';
 import { audio, setAudioFocus } from '../../audio/api';
-import { supportInfo, type MomentEngine, type SupportCue } from '../engine/api';
+import { runnerCues, supportInfo, type MomentEngine, type RunnerCue, type SupportCue } from '../engine/api';
 import { createCameraRig, createFramingDirector, desiredFraming, orbitFraming } from './camera';
 import { createHud, outcomeTone, type AimMark } from './hud';
 import { Controls, type ControlsMode } from '../controls/controls';
@@ -17,7 +17,7 @@ import { mountAimPanel, surname } from '../controls/aimPanel';
 import { mountTouchControls, type TouchUi } from '../controls/touch';
 import { startInfo } from '../controls/startPrompt';
 import { goalkeeperColor, resolveKitClash, shade, shortsColor } from './palette';
-import { buildAim, buildSupportRings, buildUserMarker } from './three/aim';
+import { buildAim, buildRunCues, buildSupportRings, buildUserMarker } from './three/aim';
 import { buildBall } from './three/ball';
 import { buildPlayer, createBodyMaterial, nameTag, type PlayerFrame, type PlayerLook, type PlayerRig } from './three/players';
 import { buildWorld, createRenderer } from './three/world';
@@ -160,6 +160,11 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
   // who is open for a pass (green) / covered (dim), and the one-two hint after the user's pass
   const supportRings = buildSupportRings();
   scene.add(supportRings.group);
+  // calm mode: the runners' projected runs while the game is frozen
+  const runCues = buildRunCues();
+  scene.add(runCues.group);
+  let runList: RunnerCue[] = [];
+  let runKey = '';
   let cue: SupportCue | null = null;
   let cueT = 0;
   let cueKey = '';
@@ -535,6 +540,11 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       for (const id of cue.covered) { const f = frames.get(id); if (f) ringList.push({ x: f.pos.x, y: f.pos.y, open: false }); }
     }
     supportRings.update(clock, ringList);
+    if (calm && live) {
+      const rk = `${s.time}|${s.ball.lastTouchId ?? '-'}`;
+      if (rk !== runKey) { runKey = rk; try { runList = runnerCues(engine); } catch { runList = []; } }
+    } else { runList = []; runKey = ''; }
+    runCues.update(clock, runList);
     if (calm) {
       // the full noise-free path of the frozen aim (rebuilt only when the aim changed)
       if (calm.version !== aimVersion || !aimShown) {
@@ -638,6 +648,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       hud.setHint(null);
       passMarker.update(clock, 0, 0, false, false);
       supportRings.update(clock, []);
+      runCues.update(clock, []);
       cue = null;
       aim.setPath(null, 0);
       lastPath = null;
@@ -684,6 +695,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       marker.dispose();
       passMarker.dispose();
       supportRings.dispose();
+      runCues.dispose();
       blobGeo?.dispose();
       blobMat?.dispose();
       blobTex?.dispose();
@@ -717,6 +729,7 @@ export function mountMomentViewImpl(container: HTMLElement, engine: MomentEngine
       hud.setBanner(null);
       passMarker.update(0, 0, 0, false, false);
       supportRings.update(0, []);
+      runCues.update(0, []);
       aim.setPath(null, 0);
       lastPath = null;
       hud.setReplay(true);
